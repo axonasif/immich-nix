@@ -1,0 +1,8 @@
+# Build/runtime state, never committed
+/.local/
+/work/
+/result
+/result-*
+
+# Direnv
+/.direnv/
