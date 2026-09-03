@@ -111,7 +111,9 @@ export IMMICH_MEDIA_DIR=/path/to/media
 
 Other knobs: `IMMICH_HTTP_HOST`, `IMMICH_HTTP_PORT`, `IMMICH_ML_HOST`,
 `IMMICH_ML_PORT`, `IMMICH_PG_PORT`, `IMMICH_REDIS_PORT`,
-`IMMICH_DB_VECTOR_EXTENSION`, `IMMICH_ML_WORKERS`.
+`IMMICH_DB_STORAGE_TYPE` (`SSD` by default, or `HDD`),
+`IMMICH_DB_VECTOR_EXTENSION` (`vectorchord` is auto-selected; set `pgvector`
+to postpone migration), `IMMICH_ML_WORKERS`.
 
 ## Upgrading Immich
 

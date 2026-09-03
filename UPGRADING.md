@@ -39,10 +39,13 @@ feature is unavailable.
 | **Which native library versions?** | [**immich-app/base-images**](https://github.com/immich-app/base-images) — `server/sources/*.json` |
 | Build tool versions | `mise.toml` + `mise.lock` in immich |
 | Plugin build steps | `mise.toml` → `[tasks.plugins]` |
-| Runtime paths | `server/src/repositories/config.repository.ts` (`resourcePaths`) |
-| Env vars (code) | `server/src/dtos/env.dto.ts` |
+| Released service graph and image pins | `docker/docker-compose.yml` **at the target tag**, not `main` |
+| Server command and process model | `server/Dockerfile`, `server/bin/start.sh`, `server/src/main.ts` |
+| Server env vars, defaults, and paths | `server/src/dtos/env.dto.ts`, `server/src/repositories/config.repository.ts` |
+| ML command and env vars | `machine-learning/Dockerfile`, `machine-learning/immich_ml/config.py` |
 | Env vars (prose) | [docs.immich.app/install/environment-variables](https://docs.immich.app/install/environment-variables) |
-| Deployment shape, PG image | [docs.immich.app/install/docker-compose](https://docs.immich.app/install/docker-compose/), `docker/docker-compose.yml` |
+| PostgreSQL image behavior | `base-images/postgres/{Dockerfile,immich-docker-entrypoint.sh,postgresql.*.conf,healthcheck.sh}` |
+| Vector extension selection and supported versions | `server/src/constants.ts`, `server/src/repositories/database.repository.ts` |
 | Release/breaking changes | [Immich releases](https://github.com/immich-app/immich/releases) |
 
 Both upstream repos are vendored as **submodules**, pinned to the revisions this
@@ -143,6 +146,10 @@ Immich tag.
 | imagemagick, libheif, libraw | `nix/shell.nix` | **base-images** `server/sources/*.json` | Format support gaps |
 | ffmpeg | `nix/shell.nix` (`jellyfin-ffmpeg`) | base-images `server/packages/ffmpeg.json` | Transcoding issues |
 | PostgreSQL major | `nix/shell.nix` (`postgresql_17`) | — (your existing cluster) | **Cluster won't start** — §6.1 |
+| Vector extensions | `nix/shell.nix`, `scripts/immich.sh` | Compose database image tag + server extension constants/repository | PostgreSQL won't start, or search indexes cannot migrate |
+| PostgreSQL runtime profile | `scripts/immich.sh` | base-images `postgres/postgresql.{ssd,hdd}.conf` | Startup failure or poor database performance |
+| Redis-compatible server | `nix/shell.nix`, `scripts/immich.sh` | Compose cache image + server Redis client/config | Jobs and cache stop working |
+| Service commands and env contract | `scripts/immich.sh` | Compose, Dockerfiles, entrypoints, env schemas | A service fails at startup or silently loses functionality |
 | geodata snapshot | `nix/geodata.nix` | — (Internet Archive) | Reverse geocoding empty |
 
 ### 2.1 Finding the native library versions upstream actually uses
@@ -347,15 +354,18 @@ nix develop --command scripts/show-upstream-pins.sh v3.2.0
 # 3. Read the release notes for breaking changes
 #    https://github.com/immich-app/immich/releases
 
-# 4. Compare against nix/shell.nix and nix/extism-js.nix; edit as needed
+# 4. Audit scripts/immich.sh against the runtime contract (§3.1)
 
-# 5. Bump the version pin
+# 5. Compare against nix/shell.nix and nix/extism-js.nix; edit as needed
+
+# 6. Bump the version pin
 echo v3.2.0 > immich-version
 
-# 6. Build
+# 7. Build
 nix develop --command scripts/build.sh
 
-# 7. Verify (§4) BEFORE pointing at real data
+# 8. Verify fresh and upgraded disposable data (§3.1, §4)
+#    BEFORE pointing at real data
 nix develop --command scripts/immich.sh start
 ```
 
@@ -363,7 +373,105 @@ nix develop --command scripts/immich.sh start
 (`git clean -e node_modules`). If a build fails in a way that smells like stale
 dependencies, delete `work/immich` entirely.
 
-### Known upcoming change: Immich 3.2
+### 3.1 Audit `scripts/immich.sh`
+
+Upstream's [upgrade guide](upstream/immich/docs/docs/install/upgrading.md) is
+an operator guide for the published containers. It deliberately does not
+explain what those containers changed internally. `scripts/immich.sh` is our
+native translation of the release's Compose file, image entrypoints, and
+health checks, so it must be reviewed separately for every Immich upgrade.
+
+Start with a diff at the exact old and new release tags:
+
+```bash
+git -C upstream/immich diff v3.1.0..v3.2.0 -- \
+  docker/docker-compose.yml docker/example.env \
+  server/Dockerfile server/bin/start.sh server/src/main.ts \
+  server/src/dtos/env.dto.ts server/src/repositories/config.repository.ts \
+  server/src/constants.ts server/src/repositories/database.repository.ts \
+  machine-learning/Dockerfile machine-learning/immich_ml/config.py
+```
+
+Also diff the old and new `upstream/base-images` revisions, especially
+`postgres/` and `server/`. The Compose file warns that its version on `main`
+may not match the latest release; the same warning applies to all of these
+checks.
+
+For each release, re-establish these invariants:
+
+- **Service graph and commands.** Compare every Compose service, dependency,
+  command, entrypoint, port, volume, and health check. The current `node
+  dist/main` process starts both API and microservices workers; do not add old
+  split worker commands unless `server/src/main.ts` changes. ML currently runs
+  as `python -m immich_ml`. If upstream adds or splits a required service, the
+  runner must do the same.
+- **Entrypoint behavior.** Read the scripts behind each image command, not just
+  the Dockerfile `CMD`. Reproduce behavior that affects correctness or
+  performance, but translate Linux-only details rather than invoking them
+  blindly. For example, server `start.sh` currently handles secret files,
+  Linux mimalloc/library paths, and CPU-based `UV_THREADPOOL_SIZE`; these are
+  not all applicable to this local macOS runner.
+- **Environment and paths.** Re-check every variable passed by `start_server`
+  and `start_ml` against the code schemas and defaults. In particular, preserve
+  the absolute media path, build-data layout, database URL, Redis connection,
+  ML URL/cache path, bind host, and port. Remove renamed variables and add new
+  required ones. Do not force a value when upstream intentionally relies on
+  auto-detection, as with `DB_VECTOR_EXTENSION`.
+- **Database image contract.** Read the Compose database image tag and the
+  base-image Dockerfile, entrypoint, SSD/HDD profiles, and health check. Keep
+  `--data-checksums`, required preload libraries, search path, WAL/memory/
+  autovacuum settings, and storage-specific planner settings aligned. Preserve
+  the Darwin exception for `effective_io_concurrency`, which PostgreSQL
+  requires to be zero because macOS lacks `posix_fadvise`.
+- **PostgreSQL and extensions.** Keep the PostgreSQL major tied to the existing
+  data directory, not blindly to Compose's default major. Compare Immich's
+  extension preference and accepted version ranges with the Nix packages,
+  preload requirements, and migration code. Immich owns `CREATE/ALTER
+  EXTENSION`, index conversion, and schema migrations; the runner should only
+  make the server prerequisites available and create a missing database.
+- **Darwin VectorChord package.** Nixpkgs currently marks all pgrx extensions
+  broken on Darwin because sandboxed PostgreSQL tests can leak shared-memory
+  objects. Our override only clears that metadata guard. After a Nixpkgs or
+  VectorChord update, check whether the override is still necessary, build it
+  on Darwin, load `vchord`, create a `vchordrq` index, and execute a vector
+  query before keeping the override.
+- **Redis/Valkey contract.** Compare the Compose image and the server's Redis
+  client/configuration. Redis and Valkey major numbers are not comparable
+  release numbers. The current Redis server is acceptable because Immich uses
+  the shared RESP command surface and this runner disables persistence. Revisit
+  that choice if upstream starts relying on Valkey-only commands, modules,
+  persistence, authentication defaults, or memory/eviction settings.
+- **Lifecycle and health.** Docker restart policies and periodic health checks
+  are not supplied by this native runner. Keep startup failure detection and
+  clean signal handling working. Upstream's PostgreSQL health check also checks
+  `pg_stat_database.checksum_failures`; our readiness probe does not replace
+  that integrity check, so include it in upgrade verification.
+
+Test two different data paths before calling the runner compatible: a brand-new
+disposable cluster and a disposable copy/restore of the previous version's
+database. A fresh start cannot exercise extension conversion, index rebuilds,
+or version-to-version schema migrations. Never use the only copy of real data
+for this test.
+
+Before replacing an old database stack, record its installed extensions:
+
+```sql
+SELECT extname, extversion, pg_get_userbyid(extowner) AS owner
+FROM pg_extension
+ORDER BY extname;
+```
+
+`vector` is pgvector and is supported by this runner. `vectors` is the retired
+pgvecto.rs extension and is different: upstream's compatibility database image
+includes it specifically for migration. This runner does not package
+pgvecto.rs, so a database containing `vectors` needs a temporary compatible
+extension or the
+[upstream standalone-PostgreSQL migration procedure](upstream/immich/docs/docs/administration/postgres-standalone.md)
+before it can be considered supported. A backup made after conversion to
+VectorChord also requires VectorChord to be available and preloaded when
+restored.
+
+### 3.2 Known upcoming change: Immich 3.2
 
 Verified by running the pins script against `v3.2.0-rc.2` (2026-09-03):
 
@@ -388,11 +496,12 @@ After any upgrade, confirm all of these. Each has caught a real problem.
 
 ```bash
 # libvips actually linked (NOT sharp's bundled copy -- see §5.1)
-cd .local/immich-app/server && node -p 'require("sharp").versions.vips'
+(cd .local/immich-app/server && node -p 'require("sharp").versions.vips')
 # expect the version from nix/shell.nix, e.g. 8.18.6 (build.sh also asserts this)
 
 # image formats present
-node -p 'const s=require("sharp");[!!s.format.heif,!!s.format.jxl,!!s.format.webp].join()'
+(cd .local/immich-app/server && \
+  node -p 'const s=require("sharp");[!!s.format.heif,!!s.format.jxl,!!s.format.webp].join()')
 # expect: true,true,true
 
 # CoreML available (Apple Silicon)
@@ -408,6 +517,31 @@ curl -so /dev/null -w '%{http_code}\n' localhost:2283/     # 200
 
 # ML answers
 curl -s localhost:3003/ping                      # pong
+
+# Redis-compatible queue/cache server answers
+redis-cli -h 127.0.0.1 -p "${IMMICH_REDIS_PORT:-6380}" ping   # PONG
+
+# VectorChord is loaded, installed as postgres, and owns both search indexes
+psql -h 127.0.0.1 -p "${IMMICH_PG_PORT:-5433}" -U postgres immich \
+  -c "SHOW shared_preload_libraries" \
+  -c "SELECT extname, extversion, pg_get_userbyid(extowner) AS owner
+      FROM pg_extension WHERE extname IN ('vector', 'vectors', 'vchord')" \
+  -c "SELECT indexname, indexdef FROM pg_indexes
+      WHERE indexname IN ('clip_index', 'face_index') ORDER BY indexname" \
+  -c "SELECT name, setting, unit FROM pg_settings
+      WHERE name IN ('autovacuum_analyze_scale_factor',
+                     'autovacuum_vacuum_cost_limit',
+                     'autovacuum_vacuum_scale_factor',
+                     'effective_io_concurrency', 'max_wal_size',
+                     'random_page_cost', 'shared_buffers',
+                     'wal_compression', 'work_mem') ORDER BY name"
+# expect vchord preloaded and installed; clip_index/face_index use vchordrq
+# compare settings with the selected upstream profile and the Darwin exception
+
+# The upstream database health check treats any checksum failure as unhealthy
+psql -h 127.0.0.1 -p "${IMMICH_PG_PORT:-5433}" -U postgres immich \
+  -Atc 'SELECT COALESCE(SUM(checksum_failures), 0) FROM pg_stat_database'
+# expect: 0
 
 # THE CORE PLUGIN LOADED -- this is the one that regresses silently
 grep -i 'Imported plugin' .local/immich-run/log/server.log
@@ -586,6 +720,10 @@ comparing file counts excluding those paths.
 
 Check the release notes for migration guidance before large version jumps, and
 skipping major versions is generally not supported — upgrade through them.
+Upstream does not support downgrading, even within a minor release. For a major
+upgrade, update mobile clients before the server; clients are generally
+compatible with the current and previous major, while the server expects its
+own matching major.
 
 ### 6.3 Then
 
@@ -595,9 +733,22 @@ export IMMICH_MEDIA_DIR=/path/to/media
 nix develop --command scripts/immich.sh start
 ```
 
-`DB_VECTOR_EXTENSION=pgvector` remains valid in 3.x (`server/src/dtos/env.dto.ts`
-accepts `pgvector | vectorchord`), so a pgvector-based cluster carries over.
-Upstream now defaults to VectorChord — check the docs if search behaves oddly.
+Both pgvector and VectorChord are installed, and VectorChord is preloaded. As
+in upstream Compose, the runner leaves `DB_VECTOR_EXTENSION` unset so Immich
+auto-selects VectorChord when it is available. On the first start of an
+existing pgvector database, Immich creates the `vchord` extension and rebuilds
+the `clip_index` and `face_index` indexes with `vchordrq`. This can take a while
+for a large library; do not interrupt it. Set
+`IMMICH_DB_VECTOR_EXTENSION=pgvector` to postpone that migration.
+
+PostgreSQL uses the settings from upstream's SSD profile by default. Set
+`IMMICH_DB_STORAGE_TYPE=HDD` when `IMMICH_PGDATA` is on spinning storage; this
+omits the SSD-specific `effective_io_concurrency=200` and
+`random_page_cost=1.2` settings while retaining the common WAL, memory, and
+autovacuum tuning. On macOS, the SSD profile uses
+`effective_io_concurrency=0` because PostgreSQL rejects nonzero values on
+platforms without `posix_fadvise`; the SSD `random_page_cost` setting still
+applies.
 
 ---
 

@@ -84,7 +84,29 @@ let
     ];
   });
 
-  postgresql' = postgresql_17.withPackages (ps: [ ps.pgvector ]);
+  # Immich prefers VectorChord when both extensions are available. VectorChord
+  # depends on pgvector, and its PostgreSQL library must be preloaded at runtime.
+  # nixpkgs marks every pgrx extension broken on Darwin because its sandboxed
+  # PostgreSQL tests can leak shared-memory objects (Nix issue #12548). The
+  # builder has Darwin linker support, so opt this package back in.
+  postgresql' = postgresql_17.withPackages (
+    ps:
+    let
+      vectorchord =
+        if stdenv.hostPlatform.isDarwin then
+          ps.vectorchord.overrideAttrs (old: {
+            meta = old.meta // {
+              broken = false;
+            };
+          })
+        else
+          ps.vectorchord;
+    in
+    [
+      ps.pgvector
+      vectorchord
+    ]
+  );
 
   extism-js = callPackage ./extism-js.nix { };
   geodata = callPackage ./geodata.nix { };

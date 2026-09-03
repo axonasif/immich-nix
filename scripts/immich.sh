@@ -29,7 +29,8 @@ ML_PORT="${IMMICH_ML_PORT:-3003}"
 PG_PORT="${IMMICH_PG_PORT:-5433}"
 REDIS_HOST="${IMMICH_REDIS_HOST:-127.0.0.1}"
 REDIS_PORT="${IMMICH_REDIS_PORT:-6380}"
-DB_VECTOR_EXTENSION="${IMMICH_DB_VECTOR_EXTENSION:-pgvector}"
+DB_VECTOR_EXTENSION="${IMMICH_DB_VECTOR_EXTENSION:-}"
+DB_STORAGE_TYPE="${IMMICH_DB_STORAGE_TYPE:-${DB_STORAGE_TYPE:-SSD}}"
 ML_WORKERS="${IMMICH_ML_WORKERS:-1}"
 ML_WORKER_TIMEOUT="${IMMICH_ML_WORKER_TIMEOUT:-300}"
 
@@ -42,6 +43,17 @@ die() { printf '\033[1;31m[immich]\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ -d "$PREFIX/server" ]] || die "no build at $PREFIX -- run scripts/build.sh first"
 command -v postgres >/dev/null || die "run inside the devShell: nix develop"
+
+case "$DB_STORAGE_TYPE" in
+  SSD|ssd) DB_STORAGE_TYPE=SSD ;;
+  HDD|hdd) DB_STORAGE_TYPE=HDD ;;
+  *) die "IMMICH_DB_STORAGE_TYPE (or DB_STORAGE_TYPE) must be SSD or HDD" ;;
+esac
+
+case "$DB_VECTOR_EXTENSION" in
+  ""|pgvector|vectorchord) ;;
+  *) die "IMMICH_DB_VECTOR_EXTENSION must be pgvector or vectorchord" ;;
+esac
 
 mkdir -p "$RUN_DIR" "$LOG_DIR" "$REDIS_DIR" "$PGSOCKET_DIR" "$MEDIA_DIR" "$CACHE_DIR"
 
@@ -116,6 +128,23 @@ wait_for_http() {
 # --- postgres ----------------------------------------------------------------
 
 start_postgres() {
+  local postgres_options
+  postgres_options="-c listen_addresses=127.0.0.1 -c port=$PG_PORT -c unix_socket_directories=$PGSOCKET_DIR"
+  postgres_options+=" -c shared_preload_libraries=vchord"
+  postgres_options+=" -c 'search_path=\"\$user\", public'"
+  postgres_options+=" -c max_wal_size=5GB -c shared_buffers=512MB -c wal_compression=on -c work_mem=16MB"
+  postgres_options+=" -c autovacuum_vacuum_scale_factor=0.1 -c autovacuum_analyze_scale_factor=0.05 -c autovacuum_vacuum_cost_limit=1000"
+  if [[ "$DB_STORAGE_TYPE" == SSD ]]; then
+    postgres_options+=" -c random_page_cost=1.2"
+    if [[ "$(uname -s)" == Darwin ]]; then
+      # PostgreSQL rejects nonzero values without posix_fadvise(), which Darwin
+      # does not provide. random_page_cost still reflects SSD access costs.
+      postgres_options+=" -c effective_io_concurrency=0"
+    else
+      postgres_options+=" -c effective_io_concurrency=200"
+    fi
+  fi
+
   if [[ ! -e "$PGDATA/PG_VERSION" ]]; then
     log "initializing postgres cluster at $PGDATA"
     mkdir -p "$PGDATA"
@@ -133,9 +162,9 @@ start_postgres() {
   fi
 
   if ! pg_ctl -D "$PGDATA" status >/dev/null 2>&1; then
-    log "starting postgres on port $PG_PORT"
+    log "starting postgres on port $PG_PORT ($DB_STORAGE_TYPE storage)"
     pg_ctl -D "$PGDATA" -l "$LOG_DIR/postgres.log" \
-      -o "-c listen_addresses=127.0.0.1 -c port=$PG_PORT -c unix_socket_directories=$PGSOCKET_DIR" \
+      -o "$postgres_options" \
       start >/dev/null
   fi
 
@@ -222,6 +251,11 @@ start_ml() {
 # --- server ------------------------------------------------------------------
 
 start_server() {
+  local vector_extension_env=()
+  if [[ -n "$DB_VECTOR_EXTENSION" ]]; then
+    vector_extension_env+=("DB_VECTOR_EXTENSION=$DB_VECTOR_EXTENSION")
+  fi
+
   start_service "immich server on $HTTP_HOST:$HTTP_PORT" "$SERVER_PIDFILE" \
     "$LOG_DIR/server.log" \
     env -C "$PREFIX/server" \
@@ -232,7 +266,7 @@ start_server() {
     IMMICH_PORT="$HTTP_PORT" \
     IMMICH_MACHINE_LEARNING_URL="http://$ML_HOST:$ML_PORT" \
     DB_URL="postgresql://postgres@127.0.0.1:$PG_PORT/immich" \
-    DB_VECTOR_EXTENSION="$DB_VECTOR_EXTENSION" \
+    "${vector_extension_env[@]}" \
     REDIS_HOSTNAME="$REDIS_HOST" \
     REDIS_PORT="$REDIS_PORT" \
     node "$PREFIX/server/dist/main"
@@ -262,6 +296,7 @@ do_status() {
   log "build:   $PREFIX ($(cat "$PREFIX/immich-version" 2>/dev/null || echo unknown))"
   log "state:   $STATE"
   log "pgdata:  $PGDATA"
+  log "storage: $DB_STORAGE_TYPE"
   log "media:   $MEDIA_DIR"
   log "logs:    $LOG_DIR"
   printf '\n'
