@@ -17,6 +17,7 @@
 
   # image / media libraries
   vips,
+  libspng,
   libraw,
   libheif,
   imagemagick,
@@ -56,8 +57,28 @@ let
   # added dcrawload at priority 100, which outranks jpegload (50) and heifload
   # (0), so the RAW loader would otherwise get first refusal on JPEG and HEIC.
   # The patch raises both to 150. See UPGRADING.md §2.2.
+  #
+  # PNG goes through libspng rather than libpng, matching upstream, which
+  # installs only libspng-dev. vips treats spng strictly as a *fallback* --
+  # meson.build only looks for it `if not png_package.found()` -- so libpng has
+  # to be disabled for spng to be used at all. Setting -Dspng=enabled alone
+  # silently does nothing.
   vips' = vips.overrideAttrs (prev: {
-    mesonFlags = prev.mesonFlags ++ [ "-Dtiff=disabled" ];
+    # overrideAttrs runs after mkDerivation applied chooseDevOutputs, so the dev
+    # output has to be named explicitly for spng.pc to be on the pkg-config path.
+    buildInputs = prev.buildInputs ++ [
+      (lib.getDev libspng)
+      libspng
+    ];
+    mesonFlags =
+      (builtins.filter (
+        f: !(lib.hasPrefix "-Dpng=" f || lib.hasPrefix "-Dspng=" f)
+      ) prev.mesonFlags)
+      ++ [
+        "-Dpng=disabled"
+        "-Dspng=enabled"
+        "-Dtiff=disabled"
+      ];
     patches = (prev.patches or [ ]) ++ [
       ./patches/0001-put-other-loaders-ahead-of-dcrawload.patch
     ];

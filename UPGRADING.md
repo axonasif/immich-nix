@@ -24,6 +24,12 @@ three confident conclusions turned out to be wrong or version-specific:
 Each mistake came from trusting a secondary source (nixpkgs' package, a stale
 checkout) instead of the tag being built.
 
+A fourth came from reading *our* config instead of upstream's build system:
+`-Dspng=enabled` looked like it enabled spng, and silently did nothing, because
+vips only consults spng when libpng is absent (§2.4). When a flag appears to
+have no effect, read the dependency's own build logic before concluding the
+feature is unavailable.
+
 ### Where to look
 
 | Question | Authoritative source |
@@ -245,14 +251,13 @@ drift is the obvious suspect even though it is usually innocent.
 
 ### 2.4 Known non-alignments (investigated, deliberately not fixed)
 
-**jpegli as the libjpeg implementation — impossible on macOS.**
+**jpegli as the libjpeg implementation — unsupported on macOS; not attempted.**
 Upstream replaces libjpeg entirely with jpegli's libjpeg-compatible shim; their
 Dockerfile says so: *"the final image uses jpegli (/usr/local/lib/libjpeg.so.62)
 built alongside libjxl"*. So every JPEG the official image encodes goes through
 jpegli, which produces smaller files at equal quality. Ours uses libjpeg-turbo.
 
-This cannot be aligned. The shim is gated out on Apple in the source
-(`lib/jpegli.cmake`):
+The shim is gated out on Apple in the source (`lib/jpegli.cmake`):
 
 ```cmake
 if (JPEGXL_ENABLE_JPEGLI_LIBJPEG AND NOT APPLE AND NOT WIN32 AND NOT EMSCRIPTEN)
@@ -265,27 +270,49 @@ linker has no equivalent for. Verified by building nixpkgs' `jpegli` with
 installs `cjpegli`/`djpegli`, but **no libjpeg shim and no jpeglib.h** — the
 guard silently skips the target.
 
-Aligning would mean patching out a platform guard and dropping the version
-script, producing a configuration nobody upstream builds or tests, underneath a
-photo server. Impact of *not* doing it is file size, not correctness. Revisit
-only if upstream enables it on Apple.
+**This is "unsupported", not "impossible".** macOS has no symbol versioning
+at all, so dropping the version script is plausibly harmless and the shim might
+well build and work. What cannot be known cheaply is whether the result is
+*correct*, because nobody upstream builds or tests that path — there is no
+reference macOS build to compare against.
 
-**libspng — flag flip does not work.**
-Upstream installs `libspng-dev` so vips prefers spng over libpng for decoding.
-nixpkgs explicitly disables it: `(lib.mesonEnable "spng" false) # we want to
-use libpng`.
+Taking it on means carrying a patch that deletes an upstream platform guard,
+and validating the result ourselves: encode/decode round-trips, output compared
+against `cjpegli` (which does build on macOS), and crash testing. The downside
+of getting it subtly wrong is corrupted thumbnails in a photo server, possibly
+not obviously.
 
-Overriding looks trivial (we already override vips) but **does not work**:
-with `-Dspng=enabled` plus `libspng` in `buildInputs`, meson accepts the option
-and compiles `spngload.c`, yet the meson summary still reports
-`PNG load/save with libpng: YES` and the built `libvips.dylib` has no reference
-to `libspng`. vips looks it up with `required: false` first
-(`dependency('spng', ...)`), so it degrades silently rather than failing.
+The cost of *not* doing it is JPEG file size, not correctness. Judged not worth
+the risk; revisit if upstream enables it on Apple, which would supply the
+tested reference this currently lacks.
 
-Adding `lib.getDev libspng` explicitly — `overrideAttrs` runs after
-`chooseDevOutputs`, so a bare append gives the `out` output and misses
-`spng.pc` — did not fix it either. Whatever else is wrong is unbounded to chase,
-and the payoff is PNG *decode speed* only. Left alone deliberately.
+**libspng — solved; PNG goes through spng, matching upstream.**
+Upstream installs only `libspng-dev`/`libspng0` and **no libpng at all**. That
+is not incidental: vips treats spng strictly as a fallback
+(`meson.build`, "only if libpng not found"):
+
+```meson
+png_dep = dependency('libpng', ..., required: get_option('png'))
+if png_dep.found() ... png_package = png_dep endif
+
+# only if libpng not found
+if not png_package.found()
+    spng_dep = dependency('spng', version: '>=0.7', required: false)
+```
+
+So **`-Dspng=enabled` alone silently does nothing** while libpng is present —
+meson accepts the option and compiles `spngload.c`, but `png_package` stays
+libpng and the built library never references libspng. `nix/shell.nix` therefore
+passes `-Dpng=disabled` as well.
+
+Two things to know if you touch this:
+
+- `overrideAttrs` runs *after* `mkDerivation` applied `chooseDevOutputs` to
+  `buildInputs`, so appending a bare `libspng` gives the `out` output and leaves
+  `spng.pc` off the pkg-config path. Use `lib.getDev`.
+- Verify with `vips --vips-config | grep 'PNG load'` — it must say
+  **`PNG load/save with spng`**, not `with libpng`. The operation is still named
+  `pngload` either way, so `vips -l` cannot tell you which is in use.
 
 Other libraries diverge by patch level in the *other* direction — we take
 nixpkgs defaults, which are mostly newer than upstream's pins (§2.1). No
@@ -576,7 +603,17 @@ Upstream now defaults to VectorChord — check the docs if search behaves oddly.
 
 ---
 
-## 8. Reference: runtime layout
+## 8. Local patches
+
+`scripts/build.sh` applies these to the source tree before building. Both are
+idempotent (the file is `git checkout`-ed first) and **fail loudly** if the code
+they target has moved — re-check them against each new tag.
+
+| Patch | Why |
+| --- | --- |
+| `scripts/patch-postgres-bin-path.py` | Immich builds the backup command as `/usr/lib/postgresql/${databaseMajorVersion}/bin/${bin}`, a Debian path that does not exist under nix. We put the matching postgres client on PATH instead. Scheduled backups are **on by default** (`config.ts`: `backup.database.enabled`), so without this the nightly job fails silently. nixpkgs patches the same line. |
+
+## 9. Reference: runtime layout
 
 Under `IMMICH_BUILD_DATA` (see `resourcePaths` in `config.repository.ts`):
 

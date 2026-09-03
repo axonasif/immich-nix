@@ -42,6 +42,22 @@ fetch_source() {
   git -C "$SRC_DIR" clean -qfdx -e node_modules
 }
 
+# --- local patches -----------------------------------------------------------
+
+patch_source() {
+  log "applying local patches"
+  cd "$SRC_DIR"
+
+  # Immich hardcodes Debian's postgres layout for the scheduled database
+  # backup, which does not exist under nix. We have pg_dump/pg_restore on PATH,
+  # so drop the directory prefix. nixpkgs patches the same line.
+  # Backups are ON by default (config.ts: backup.database.enabled), so without
+  # this the nightly job fails silently.
+  local backup_service=server/src/services/database-backup.service.ts
+  git checkout -- "$backup_service"
+  python3 "$REPO_ROOT/scripts/patch-postgres-bin-path.py" "$backup_service"
+}
+
 # --- javascript --------------------------------------------------------------
 
 build_js() {
@@ -61,6 +77,11 @@ build_js() {
   log "building web"
   pnpm --filter immich-web install --frozen-lockfile
   pnpm --filter immich-web build
+
+  # Upstream ships the CLI in the server image and links it onto PATH.
+  log "building cli"
+  pnpm --filter @immich/sdk --filter @immich/cli install --frozen-lockfile
+  pnpm --filter @immich/sdk --filter @immich/cli build
 }
 
 # --- assembly ----------------------------------------------------------------
@@ -116,6 +137,38 @@ assemble_build_data() {
   echo '{"sources":[],"packages":[]}' > "$build/build-lock.json"
 }
 
+deploy_cli() {
+  log "deploying cli to $PREFIX/cli"
+  rm -rf "$PREFIX/cli"
+
+  cd "$SRC_DIR"
+  pnpm --filter @immich/cli --prod --no-optional deploy "$PREFIX/cli"
+}
+
+install_wrappers() {
+  log "installing wrappers in $PREFIX/bin"
+  rm -rf "$PREFIX/bin"
+  mkdir -p "$PREFIX/bin"
+
+  # `immich` -- the upload/CLI tool. Upstream symlinks it onto PATH from the
+  # server image.
+  cat > "$PREFIX/bin/immich" <<WRAPPER
+#!/usr/bin/env bash
+exec "\$(command -v node)" "$PREFIX/cli/bin/immich" "\$@"
+WRAPPER
+
+  # `immich-admin` -- server maintenance commands (reset admin password, etc).
+  # Same entrypoint as the server, dispatched by argv.
+  cat > "$PREFIX/bin/immich-admin" <<WRAPPER
+#!/usr/bin/env bash
+cd "$PREFIX/server" || exit 1
+export IMMICH_BUILD_DATA="$PREFIX/build"
+exec "\$(command -v node)" "$PREFIX/server/dist/main" immich-admin "\$@"
+WRAPPER
+
+  chmod +x "$PREFIX/bin/immich" "$PREFIX/bin/immich-admin"
+}
+
 # --- machine learning --------------------------------------------------------
 
 build_ml() {
@@ -143,10 +196,13 @@ build_ml() {
 # --- main --------------------------------------------------------------------
 
 fetch_source
+patch_source
 build_js
 deploy_server
+deploy_cli
 assemble_build_data
 build_ml
+install_wrappers
 
 printf '%s\n' "$IMMICH_VERSION" > "$PREFIX/immich-version"
 log "built immich $IMMICH_VERSION into $PREFIX"

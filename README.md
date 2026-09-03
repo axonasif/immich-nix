@@ -47,9 +47,10 @@ scripts/immich.sh restart
 | `nix/extism-js.nix` | upstream `extism-js` release binary (builds the WASM plugin) |
 | `nix/geodata.nix` | reverse-geocoding data, as a fixed-output derivation |
 | `nix/patches/` | libvips patch vendored from upstream's base-images |
+| `scripts/patch-postgres-bin-path.py` | drops Immich's hardcoded Debian postgres path |
 | `scripts/show-upstream-pins.sh` | read every upstream pin out of an Immich tag |
 | `work/immich` | Immich source checkout (gitignored) |
-| `.local/immich-app` | built application (gitignored) |
+| `.local/immich-app` | built application, incl. `bin/immich` and `bin/immich-admin` (gitignored) |
 | `.local/immich-run` | runtime state: postgres, redis, logs, media (gitignored) |
 
 ## Pointing at existing data
