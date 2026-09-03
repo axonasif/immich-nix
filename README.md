@@ -48,7 +48,7 @@ Then build and run:
 ```bash
 nix develop                # enter the toolchain shell
 scripts/build.sh           # build immich into .local/immich-app  (slow first time)
-scripts/immich.sh start    # start postgres, redis, ML and the server
+scripts/immich.sh start    # start postgres, Valkey, ML and the server
 ```
 
 Then open <http://127.0.0.1:2283> and create your admin account.
@@ -57,7 +57,7 @@ The first build downloads a lot (nixpkgs closure, pnpm and Python deps) and
 compiles `sharp` against the Nix libvips; later builds are much faster.
 
 Everything lands under `.local/` — the built app in `.local/immich-app`, and
-postgres, redis, logs and media in `.local/immich-run`. Nothing is installed
+postgres, Valkey, logs and media in `.local/immich-run`. Nothing is installed
 system-wide, and removing the repo removes the install.
 
 ## Day-to-day
@@ -92,7 +92,7 @@ immich-admin --help    # list-users, grant-admin, reset passwords, ...
 | `upstream/immich` | **submodule** — Immich source; this is what gets built |
 | `upstream/base-images` | **submodule** — upstream's native-library builds, for reference |
 | `.local/immich-app` | built application, incl. `bin/immich` and `bin/immich-admin` (gitignored) |
-| `.local/immich-run` | runtime state: postgres, redis, logs, media (gitignored) |
+| `.local/immich-run` | runtime state: postgres, Valkey, logs, media (gitignored) |
 
 ## Pointing at existing data
 

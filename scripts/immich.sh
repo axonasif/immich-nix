@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the immich stack (postgres, redis, machine-learning, server) built by
+# Run the immich stack (postgres, Valkey, machine-learning, server) built by
 # scripts/build.sh. Expects to run inside the flake devShell.
 #
 #   scripts/immich.sh {start|stop|restart|status|logs}
@@ -194,32 +194,34 @@ stop_postgres() {
   fi
 }
 
-# --- redis -------------------------------------------------------------------
+# Immich and upstream Compose retain Redis connection naming while using Valkey.
+# Keep these paths and variables stable for existing native installations.
+# --- valkey ------------------------------------------------------------------
 
-start_redis() {
+start_valkey() {
   if [[ -f "$REDIS_PIDFILE" ]] && kill -0 "$(cat "$REDIS_PIDFILE")" >/dev/null 2>&1; then
-    log "redis already running"
+    log "valkey already running"
     return 0
   fi
 
-  log "starting redis on port $REDIS_PORT"
-  redis-server \
+  log "starting valkey on port $REDIS_PORT"
+  valkey-server \
     --bind "$REDIS_HOST" --port "$REDIS_PORT" \
     --save '' --appendonly no --daemonize yes \
     --dir "$REDIS_DIR" --pidfile "$REDIS_PIDFILE" \
     --logfile "$LOG_DIR/redis.log"
 
   for _ in $(seq 1 30); do
-    redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping >/dev/null 2>&1 && return 0
+    valkey-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping >/dev/null 2>&1 && return 0
     sleep 1
   done
-  die "redis did not become ready"
+  die "valkey did not become ready"
 }
 
-stop_redis() {
+stop_valkey() {
   if [[ -f "$REDIS_PIDFILE" ]] && kill -0 "$(cat "$REDIS_PIDFILE")" >/dev/null 2>&1; then
-    log "stopping redis"
-    redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" shutdown nosave >/dev/null 2>&1 || true
+    log "stopping valkey"
+    valkey-cli -h "$REDIS_HOST" -p "$REDIS_PORT" shutdown nosave >/dev/null 2>&1 || true
     rm -f "$REDIS_PIDFILE"
   fi
 }
@@ -278,7 +280,7 @@ start_server() {
 
 do_start() {
   start_postgres
-  start_redis
+  start_valkey
   start_ml
   start_server
   do_status
@@ -287,7 +289,7 @@ do_start() {
 do_stop() {
   stop_service "immich server" "$SERVER_PIDFILE"
   stop_service "machine-learning" "$ML_PIDFILE"
-  stop_redis
+  stop_valkey
   stop_postgres
 }
 

@@ -143,6 +143,14 @@ else
 fi
 echo
 
+# --- service images ----------------------------------------------------------
+
+bold "service images -> nix/shell.nix"
+show docker/docker-compose.yml \
+  | sed -n 's|^[[:space:]]*image: \(.*valkey/valkey:[^[:space:]]*\)|  valkey: \1|p'
+echo "  (resolve the pinned digest to its exact release; the tag is only a major)"
+echo
+
 # --- machine learning --------------------------------------------------------
 
 bold "machine-learning deps (pyproject.toml)"
