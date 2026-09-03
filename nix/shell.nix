@@ -16,7 +16,7 @@
   binaryen,
 
   # image / media libraries
-  vips_8_17,
+  vips,
   libraw,
   libheif,
   imagemagick,
@@ -44,11 +44,23 @@
 }:
 
 let
-  # Immich's thumbnail generation for raw photos fails with vips' bundled tiff
-  # reader ("samples_per_pixel not a whole number of bytes"), and outright
-  # breaks on vips 8.18 -- so pin 8.17 with tiff disabled, as nixpkgs does.
-  vips' = vips_8_17.overrideAttrs (prev: {
+  # Track whatever libvips upstream builds against -- see UPGRADING.md §2.2.
+  # Immich v3.1.0's official image uses 8.18.4; nixpkgs' immich pins 8.17 with a
+  # comment claiming 8.18 breaks thumbnails, which upstream contradicts.
+  #
+  # -Dtiff=disabled matches upstream's own build (base-images
+  # server/sources/libvips.sh): vips' tiff reader mishandles some raw files
+  # ("tiff2vips: samples_per_pixel not a whole number of bytes").
+  #
+  # The patch is upstream's too, and is REQUIRED from libvips 8.18 on: 8.18
+  # added dcrawload at priority 100, which outranks jpegload (50) and heifload
+  # (0), so the RAW loader would otherwise get first refusal on JPEG and HEIC.
+  # The patch raises both to 150. See UPGRADING.md §2.2.
+  vips' = vips.overrideAttrs (prev: {
     mesonFlags = prev.mesonFlags ++ [ "-Dtiff=disabled" ];
+    patches = (prev.patches or [ ]) ++ [
+      ./patches/0001-put-other-loaders-ahead-of-dcrawload.patch
+    ];
   });
 
   postgresql' = postgresql_17.withPackages (ps: [ ps.pgvector ]);
@@ -100,6 +112,9 @@ mkShell {
 
   # Consumed by scripts/build.sh when assembling the runtime tree.
   IMMICH_GEODATA = geodata;
+
+  # build.sh asserts sharp actually linked against this, not a bundled copy.
+  IMMICH_VIPS_VERSION = vips'.version;
 
   # node-gyp looks for node headers here.
   # https://github.com/nodejs/node-gyp/issues/1191#issuecomment-301243919

@@ -19,7 +19,7 @@ three confident conclusions turned out to be wrong or version-specific:
 | --- | --- |
 | Immich doesn't need `insightface` | True in 3.2, **false in 3.1.0** — read the tag you're building |
 | sharp needs libvips ≥ 8.18.3 | True for sharp 0.35.3 (3.2), **not** 0.34.5 (3.1.0) |
-| libvips 8.18 breaks thumbnails (per nixpkgs) | **Contradicted** — Immich v3.1.0 officially ships libvips 8.18.4 (§2.1) |
+| libvips 8.18 breaks thumbnails (per nixpkgs) | **Wrong diagnosis** — Immich v3.1.0 ships 8.18.4; 8.18 just needs upstream's loader-priority patch (§2.2) |
 
 Each mistake came from trusting a secondary source (nixpkgs' package, a stale
 checkout) instead of the tag being built.
@@ -114,7 +114,7 @@ Immich tag.
 | Pin | Lives in | Upstream source of truth | Breaks if wrong |
 | --- | --- | --- | --- |
 | Immich version | `immich-version` | — | — |
-| **libvips** | `nix/shell.nix` (`vips_8_17`) | sharp's `config.libvips` (floor) + base-images (what upstream ships) | **Build fails, or silently wrong runtime** — §5.1 |
+| **libvips** (+ vendored patch) | `nix/shell.nix` (`vips`), `nix/patches/` | sharp's `config.libvips` (floor) + base-images (what upstream ships) | **Build fails, or silently wrong runtime** — §5.1 |
 | `extism-js` version + sha256 | `nix/extism-js.nix` | `mise.lock`, `github:extism/js-pdk` | Plugin build fails |
 | Node major | `nix/shell.nix` (`nodejs_24`) | `mise.toml` | Build errors |
 | pnpm major | `nix/shell.nix` (`pnpm_11`) | `mise.toml` / `packageManager` | §5.6 |
@@ -136,12 +136,31 @@ That datestamp identifies a point in the **base-images** repo:
 # 1. which base image does this tag use?
 git -C work/immich show v3.1.0:server/Dockerfile | grep base-server-dev
 #    -> base-server-dev:202607211135      (i.e. 2026-07-21 11:35)
+```
 
-# 2. what did base-images pin at that time?
+**Most reliable — the image states its own source commit.** The published image
+carries `org.opencontainers.image.revision` in its OCI labels:
+
+```bash
+TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:immich-app/base-server-dev:pull&service=ghcr.io" \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
+# fetch the image index -> pick the arm64 manifest -> fetch its config blob
+#   -> read .config.Labels["org.opencontainers.image.revision"]
+```
+
+For v3.1.0 that yields base-images commit `cf578f014cf7060709d7cb02427e07d18d6ace50`.
+Then read `server/sources/<lib>.json` at that exact revision.
+
+**Approximate — what `show-upstream-pins.sh` uses**, since it needs no registry
+auth: treat the datestamp as a timestamp and take the last commit before it.
+
+```bash
 curl -s "https://api.github.com/repos/immich-app/base-images/commits?path=server/sources/libvips.json&until=2026-07-21T11:35:00Z&per_page=1" \
   | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['sha'])"
-# then fetch server/sources/libvips.json at that sha
 ```
+
+This gave identical results for v3.1.0, but it is an inference. Use the revision
+label when the answer matters.
 
 Files to check: `server/sources/{libvips,imagemagick,libheif,libraw,libjxl,jpegli}.json`
 and `server/packages/ffmpeg.json`.
@@ -152,7 +171,7 @@ and `server/packages/ffmpeg.json`.
 
 | Library | Upstream (v3.1.0) | This repo | |
 | --- | --- | --- | --- |
-| libvips | **8.18.4** | 8.17.3 | older — see §2.2 |
+| libvips | **8.18.4** | 8.18.6 | tracks upstream — §2.2 |
 | imagemagick | 7.1.2-21 | 7.1.2-29 | newer |
 | libheif | 1.21.2 | 1.23.1 | newer |
 | libraw | 0.22.1 | 0.22.1 | match |
@@ -164,25 +183,48 @@ and `server/packages/ffmpeg.json`.
 > reading `main` gives you the versions for Immich `main`, not your tag. This
 > exact mistake was made while first writing this document.
 
-### 2.2 Known divergence from upstream — libvips
+### 2.2 libvips: how it is built, and why the patch is mandatory
 
-`nix/shell.nix` currently supplies **libvips 8.17.3** (`vips_8_17`, with
-`-Dtiff=disabled`), inherited from nixpkgs' Immich package and its comment
-`# thumbnail generation fails with vips 8.18`.
+`nix/shell.nix` supplies **libvips 8.18.x**, built the way upstream builds it.
+Read `server/sources/libvips.sh` in base-images to confirm this still matches:
 
-**That comment is contradicted by upstream**, which ships v3.1.0 against
-libvips 8.18.4. sharp 0.34.5 requires only `>=8.17.3`, so both satisfy the
-gate — but our combination is *not* the one upstream tests.
+```bash
+meson setup build --buildtype=release --libdir=lib -Dintrospection=disabled -Dtiff=disabled
+```
 
-It works (verified: HEIF, JXL and WebP all functional, thumbnails generated).
-Left as-is because it is proven here, but:
+Two things are copied from upstream, and both matter:
 
-- Treat nixpkgs' 8.18 warning as **unverified and probably nixpkgs-specific**.
-- Moving to `vips` (8.18.x) to match upstream is a reasonable follow-up, and is
-  required anyway for Immich 3.2 (sharp 0.35.3 needs `>=8.18.3`).
-- `-Dtiff=disabled` is a separate nixpkgs workaround for raw thumbnails failing
-  with `tiff2vips: samples_per_pixel not a whole number of bytes`. Also
-  unverified against current upstream; test raw photos if you change it.
+**`-Dtiff=disabled`.** Not a nixpkgs quirk — upstream disables it too. vips'
+tiff reader mishandles some raw files (`tiff2vips: samples_per_pixel not a whole
+number of bytes`).
+
+**`nix/patches/0001-put-other-loaders-ahead-of-dcrawload.patch`** — vendored
+from base-images. **Required from libvips 8.18 onwards.** 8.18 added a
+`dcrawload` loader at priority **100**, which outranks stock `jpegload` (50) and
+`heifload` (0), so the RAW loader gets first refusal on ordinary JPEG and HEIC
+files. HEIC being the default iPhone format, this is not a corner case. The
+patch raises both to 150.
+
+Verify after any vips change:
+
+```bash
+nix develop --command vips -l | grep -E '\((jpegload|heifload|dcrawload)\)'
+# expect jpegload=150, heifload=150, dcrawload=100
+```
+
+This very likely explains nixpkgs' comment `# thumbnail generation fails with
+vips 8.18` on its `vips_8_17` pin: nixpkgs does **not** apply this patch, so its
+8.18 would indeed misroute image loading. The right conclusion is not "avoid
+8.18" but "8.18 needs upstream's patch". Immich itself has shipped 8.18 since at
+least July 2026.
+
+#### History
+
+This repo originally pinned `vips_8_17` by copying nixpkgs. That was wrong:
+Immich v3.1.0's own image uses 8.18.4. Corrected on 2026-09-03 to track
+upstream. sharp 0.34.5 accepts `>=8.17.3` so the old pin was not *broken*, just
+untested by upstream — and it would have blocked Immich 3.2 (sharp 0.35.3 needs
+`>=8.18.3`) anyway.
 
 Other libraries diverge by patch level in the *other* direction — we take
 nixpkgs defaults, which are mostly newer than upstream's pins (§2.1). No
@@ -230,8 +272,9 @@ Verified by running the pins script against `v3.2.0-rc.2` (2026-09-03):
 | pnpm | 11.13.1 | 11.22.0 |
 | insightface | required | **dropped** |
 
-So 3.2 needs `vips_8_17` → `vips` (8.18.x) in `nix/shell.nix`, plus a new
-`extism-js` version and checksum. Re-verify against the real tag when it ships —
+3.2's libvips floor is already satisfied (we ship 8.18.x), so it needs a new
+`extism-js` version and checksum, and re-checking the vendored libvips patch
+still applies. Re-verify against the real tag when it ships —
 release candidates change.
 
 ---
@@ -243,7 +286,7 @@ After any upgrade, confirm all of these. Each has caught a real problem.
 ```bash
 # libvips actually linked (NOT sharp's bundled copy -- see §5.1)
 cd .local/immich-app/server && node -p 'require("sharp").versions.vips'
-# expect the version from nix/shell.nix, e.g. 8.17.3
+# expect the version from nix/shell.nix, e.g. 8.18.6 (build.sh also asserts this)
 
 # image formats present
 node -p 'const s=require("sharp");[!!s.format.heif,!!s.format.jxl,!!s.format.webp].join()'
@@ -300,9 +343,22 @@ Two things must both hold:
 - `SHARP_FORCE_GLOBAL_LIBVIPS=1` (set by `nix/shell.nix`), making the source
   build use the system libvips
 
-`scripts/build.sh` does both and asserts the result. **Do not remove either.**
+`scripts/build.sh` does both, and **fails** if the linked version does not match
+`IMMICH_VIPS_VERSION` from the shell. **Do not remove either, or the assertion.**
 Upstream does the same in `server/Dockerfile` — check there if the mechanism
 changes.
+
+**pnpm will not relink sharp when only the vips changes.** It reuses the
+already-built package from its store, so the deployed tree silently keeps
+pointing at the old libvips — observed exactly this when moving 8.17 → 8.18.
+`build.sh` therefore rebuilds sharp unconditionally after deploying:
+
+```bash
+( cd "$PREFIX/server/node_modules/sharp" && npm run build )
+```
+
+This is why upstream's Dockerfile has the same explicit step. If you ever change
+the vips and the version does not move, suspect this before anything else.
 
 Note `npm install --build-from-source` does *not* work — npm reports
 `Unknown cli config "--build-from-source"` and installs the prebuilt anyway.

@@ -77,9 +77,22 @@ deploy_server() {
   cd "$SRC_DIR"
   pnpm --filter immich --prod --no-optional deploy "$PREFIX/server"
 
+  # pnpm reuses an already-built sharp from its store, so changing the vips in
+  # nix/shell.nix does NOT by itself trigger a relink -- the deployed tree keeps
+  # pointing at the old libvips. Upstream's server/Dockerfile rebuilds sharp
+  # explicitly for the same reason. Do it unconditionally; it is cheap.
+  log "rebuilding sharp against the current libvips"
+  ( cd "$PREFIX/server/node_modules/sharp" && npm run build ) >/dev/null 2>&1 \
+    || ( cd "$PREFIX/server/node_modules/sharp" && npm run build )
+
   local vips
   vips="$(cd "$PREFIX/server" && node -p 'require("sharp").versions.vips')" \
     || die "sharp is not loadable in the deployed tree"
+
+  if [[ -n "${IMMICH_VIPS_VERSION:-}" && "$vips" != "$IMMICH_VIPS_VERSION" ]]; then
+    die "sharp linked against libvips $vips, but the shell provides $IMMICH_VIPS_VERSION.
+     sharp is probably using its own bundled libvips -- see UPGRADING.md 5.1."
+  fi
   log "sharp linked against libvips $vips"
 }
 
