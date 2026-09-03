@@ -21,6 +21,10 @@
   libheif,
   imagemagick,
   exiftool,
+  perl,
+  # Immich relies on jellyfin's ffmpeg patches, not stock ffmpeg.
+  # https://github.com/NixOS/nixpkgs/issues/351943
+  jellyfin-ffmpeg,
 
   # node-canvas deps
   cairo,
@@ -50,6 +54,7 @@ let
   postgresql' = postgresql_17.withPackages (ps: [ ps.pgvector ]);
 
   extism-js = callPackage ./extism-js.nix { };
+  geodata = callPackage ./geodata.nix { };
 in
 mkShell {
   name = "immich-native";
@@ -70,6 +75,9 @@ mkShell {
     libheif
     imagemagick
     exiftool
+    # exiftool-vendored probes for perl even when exiftool comes from PATH.
+    perl
+    jellyfin-ffmpeg
 
     cairo
     giflib
@@ -89,6 +97,9 @@ mkShell {
 
   # Build sharp against the vips above instead of downloading a prebuilt binary.
   SHARP_FORCE_GLOBAL_LIBVIPS = 1;
+
+  # Consumed by scripts/build.sh when assembling the runtime tree.
+  IMMICH_GEODATA = geodata;
 
   # node-gyp looks for node headers here.
   # https://github.com/nodejs/node-gyp/issues/1191#issuecomment-301243919
