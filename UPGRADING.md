@@ -148,7 +148,7 @@ Immich tag.
 | PostgreSQL major | `nix/shell.nix` (`postgresql_17`) | — (your existing cluster) | **Cluster won't start** — §6.1 |
 | Vector extensions | `nix/shell.nix`, `scripts/immich.sh` | Compose database image tag + server extension constants/repository | PostgreSQL won't start, or search indexes cannot migrate |
 | PostgreSQL runtime profile | `scripts/immich.sh` | base-images `postgres/postgresql.{ssd,hdd}.conf` | Startup failure or poor database performance |
-| Valkey version + sha256 | `nix/shell.nix`, `scripts/immich.sh` | Compose cache image digest + server Redis client/config | Jobs and cache stop working |
+| Valkey major + nixpkgs package | `flake.lock`, `nix/shell.nix`, `scripts/immich.sh` | Compose cache image tag + server Redis client/config | Jobs and cache stop working |
 | Service commands and env contract | `scripts/immich.sh` | Compose, Dockerfiles, entrypoints, env schemas | A service fails at startup or silently loses functionality |
 | geodata snapshot | `nix/geodata.nix` | — (Internet Archive) | Reverse geocoding empty |
 
@@ -435,14 +435,16 @@ For each release, re-establish these invariants:
   VectorChord update, check whether the override is still necessary, build it
   on Darwin, load `vchord`, create a `vchordrq` index, and execute a vector
   query before keeping the override.
-- **Valkey contract.** Resolve the exact release behind Compose's pinned Valkey
-  image digest and keep `valkey'` in `nix/shell.nix` aligned. The image tag only
-  states the major, so it is not an exact pin by itself. Immich and Compose call
-  the connection `redis`, which is why the runner must retain `REDIS_*` env
-  names and its existing `redis` state, PID, and log paths. Nix's package
-  provides `valkey-server` and `valkey-cli`; it does not provide the image's
-  `redis-*` compatibility command names. Recheck commands, persistence,
-  authentication, and memory/eviction settings whenever the image changes.
+- **Valkey contract.** Keep nixpkgs' Valkey on the major supported by Compose;
+  prefer its current patch release over reproducing the container digest's
+  older patch. `flake.lock` still makes the selected package reproducible while
+  avoiding a custom source pin and retaining nixpkgs security fixes and binary
+  cache coverage. Immich and Compose call the connection `redis`, which is why
+  the runner must retain `REDIS_*` env names and its existing `redis` state,
+  PID, and log paths. Nix's package provides `valkey-server` and `valkey-cli`;
+  it does not provide the image's `redis-*` compatibility command names.
+  Recheck commands, persistence, authentication, and memory/eviction settings
+  whenever the image or Valkey major changes.
 - **Lifecycle and health.** Docker restart policies and periodic health checks
   are not supplied by this native runner. Keep startup failure detection and
   clean signal handling working. Upstream's PostgreSQL health check also checks
@@ -520,9 +522,9 @@ curl -so /dev/null -w '%{http_code}\n' localhost:2283/     # 200
 # ML answers
 curl -s localhost:3003/ping                      # pong
 
-# Valkey queue/cache server answers and matches the upstream release
+# Valkey queue/cache server answers and stays on upstream's supported major
 valkey-cli -h 127.0.0.1 -p "${IMMICH_REDIS_PORT:-6380}" ping   # PONG
-valkey-server --version                                         # v=9.1.0
+valkey-server --version                                         # currently v=9.1.1
 
 # VectorChord is loaded, installed as postgres, and owns both search indexes
 psql -h 127.0.0.1 -p "${IMMICH_PG_PORT:-5433}" -U postgres immich \

@@ -3,7 +3,6 @@
   mkShell,
   stdenv,
   callPackage,
-  fetchFromGitHub,
 
   # toolchain
   nodejs_24,
@@ -109,18 +108,6 @@ let
     ]
   );
 
-  # Match the exact Valkey release behind Immich v3.1.0's pinned Compose image
-  # (valkey:9@sha256:8e8d64b...). Keep this pin aligned when Compose changes.
-  valkey' = valkey.overrideAttrs (_: {
-    version = "9.1.0";
-    src = fetchFromGitHub {
-      owner = "valkey-io";
-      repo = "valkey";
-      rev = "9.1.0";
-      hash = "sha256-RMZz83fycpOTPWB1dIXU0/hdh4ZGC+6JhCws8htAQ5E=";
-    };
-  });
-
   extism-js = callPackage ./extism-js.nix { };
   geodata = callPackage ./geodata.nix { };
 in
@@ -156,7 +143,7 @@ mkShell {
     pixman
 
     postgresql'
-    valkey'
+    valkey
   ]
   ++ lib.optionals stdenv.hostPlatform.isDarwin [
     apple-sdk
