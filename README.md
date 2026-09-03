@@ -83,7 +83,16 @@ Start by diffing the new tag's requirements against what this repo pins:
 nix develop --command scripts/show-upstream-pins.sh v3.2.0
 ```
 
-That prints every upstream pin and what it maps to here. Update `nix/` and
-`immich-version` accordingly, rebuild, then work through the verification
-checklist in UPGRADING.md — in particular the core-plugin check, which is the
-one thing that regresses **silently**.
+That reads the pins straight out of the tag — toolchain versions from
+`mise.toml`, `extism-js` from `mise.lock`, sharp's libvips requirement from
+npm, and the native library versions from
+[immich-app/base-images](https://github.com/immich-app/base-images), resolved
+to the base image your tag actually uses.
+
+Update `nix/` and `immich-version` accordingly, rebuild, then work through the
+verification checklist in UPGRADING.md — in particular the core-plugin check,
+which is the one thing that regresses **silently**.
+
+> Findings in UPGRADING.md were verified against v3.1.0 on 2026-09-03 and will
+> go stale. Always confirm against upstream — the immich repo at your tag,
+> base-images, and <https://docs.immich.app>.

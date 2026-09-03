@@ -90,6 +90,38 @@ for tool, note in tools:
     print()
 PY
 
+# --- native libraries (immich-app/base-images) -------------------------------
+# immich builds FROM a dated base image; that datestamp identifies a point in
+# the base-images repo, which is where the real native library versions live.
+
+bold "native libraries -> nix/shell.nix"
+base_tag="$(show server/Dockerfile | sed -n 's|.*base-server-dev:\([0-9]\{12\}\).*|\1|p' | head -1)"
+
+if [[ -z "$base_tag" ]]; then
+  warn "  could not find a base-server-dev tag in server/Dockerfile"
+  warn "  check https://github.com/immich-app/base-images manually"
+else
+  until_ts="${base_tag:0:4}-${base_tag:4:2}-${base_tag:6:2}T${base_tag:8:2}:${base_tag:10:2}:00Z"
+  echo "  base image : base-server-dev:$base_tag  ($until_ts)"
+
+  api="https://api.github.com/repos/immich-app/base-images/commits"
+  raw="https://raw.githubusercontent.com/immich-app/base-images"
+
+  for lib in libvips imagemagick libheif libraw libjxl; do
+    sha="$(curl -fsSL "$api?path=server/sources/$lib.json&until=$until_ts&per_page=1" 2>/dev/null \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[0]["sha"] if d else "")' 2>/dev/null || true)"
+    if [[ -z "$sha" ]]; then
+      printf '    %-13s <lookup failed>\n' "$lib"
+      continue
+    fi
+    ver="$(curl -fsSL "$raw/$sha/server/sources/$lib.json" 2>/dev/null \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null || true)"
+    printf '    %-13s %s\n' "$lib" "${ver:-<unknown>}"
+  done
+  echo "  (these are what upstream builds against; see UPGRADING.md §2.1-2.2)"
+fi
+echo
+
 # --- machine learning --------------------------------------------------------
 
 bold "machine-learning deps (pyproject.toml)"

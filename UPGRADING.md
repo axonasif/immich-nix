@@ -3,8 +3,58 @@
 Everything learned while getting Immich to build and run natively on
 aarch64-darwin. Read this before changing `immich-version` or `nix/`.
 
-Facts here were verified empirically on 2026-09-03 against Immich v3.1.0,
-macOS 25.5.0 (Apple Silicon), nixpkgs `nixos-unstable` @ 2026-08-31.
+---
+
+## 0. Read upstream first — this document goes stale
+
+> **Findings here were verified on 2026-09-03 against Immich v3.1.0, macOS
+> 25.5.0 (Apple Silicon), nixpkgs `nixos-unstable` @ 2026-08-31. Immich moves
+> fast. Treat everything below as a starting point and a record of *why*
+> decisions were made — not as current fact.**
+
+**Always re-derive the specifics from upstream.** During the initial work,
+three confident conclusions turned out to be wrong or version-specific:
+
+| Believed | Actually |
+| --- | --- |
+| Immich doesn't need `insightface` | True in 3.2, **false in 3.1.0** — read the tag you're building |
+| sharp needs libvips ≥ 8.18.3 | True for sharp 0.35.3 (3.2), **not** 0.34.5 (3.1.0) |
+| libvips 8.18 breaks thumbnails (per nixpkgs) | **Contradicted** — Immich v3.1.0 officially ships libvips 8.18.4 (§2.1) |
+
+Each mistake came from trusting a secondary source (nixpkgs' package, a stale
+checkout) instead of the tag being built.
+
+### Where to look
+
+| Question | Authoritative source |
+| --- | --- |
+| How is the server built? | [`server/Dockerfile`](https://github.com/immich-app/immich/blob/main/server/Dockerfile) in immich |
+| How is ML built? | [`machine-learning/Dockerfile`](https://github.com/immich-app/immich/blob/main/machine-learning/Dockerfile) |
+| **Which native library versions?** | [**immich-app/base-images**](https://github.com/immich-app/base-images) — `server/sources/*.json` |
+| Build tool versions | `mise.toml` + `mise.lock` in immich |
+| Plugin build steps | `mise.toml` → `[tasks.plugins]` |
+| Runtime paths | `server/src/repositories/config.repository.ts` (`resourcePaths`) |
+| Env vars (code) | `server/src/dtos/env.dto.ts` |
+| Env vars (prose) | [docs.immich.app/install/environment-variables](https://docs.immich.app/install/environment-variables) |
+| Deployment shape, PG image | [docs.immich.app/install/docker-compose](https://docs.immich.app/install/docker-compose/), `docker/docker-compose.yml` |
+| Release/breaking changes | [Immich releases](https://github.com/immich-app/immich/releases) |
+
+Read the source **at the tag you are building**, not `main`:
+
+```bash
+git -C work/immich show v3.1.0:server/Dockerfile
+```
+
+`scripts/show-upstream-pins.sh <tag>` automates most of this.
+
+### Cross-checking against nixpkgs
+
+nixpkgs' [`immich` package](https://github.com/NixOS/nixpkgs/blob/nixos-unstable/pkgs/by-name/im/immich/package.nix)
+is a **useful but secondary** reference. It solves the same problems, so its
+`buildInputs` are a good checklist. But its dependency list drifts from
+upstream's, its comments describe the Immich version *it* packages, and some
+of its pins are workarounds for how nixpkgs builds things rather than Immich
+requirements. Verify anything you take from it.
 
 ---
 
@@ -58,25 +108,86 @@ the Nix sandbox. Accepted trade for a personal deployment.
 
 ## 2. Pins that must be kept in sync
 
-Run `scripts/show-upstream-pins.sh <tag>` to read all of these out of any
-Immich tag. Everything it prints maps to something here.
+Run `scripts/show-upstream-pins.sh <tag>` to read most of these out of any
+Immich tag.
 
 | Pin | Lives in | Upstream source of truth | Breaks if wrong |
 | --- | --- | --- | --- |
 | Immich version | `immich-version` | — | — |
-| **libvips** | `nix/shell.nix` (`vips_8_17`) | `sharp`'s `config.libvips` | **Build fails, or silently wrong runtime** — see §5.1 |
+| **libvips** | `nix/shell.nix` (`vips_8_17`) | sharp's `config.libvips` (floor) + base-images (what upstream ships) | **Build fails, or silently wrong runtime** — §5.1 |
 | `extism-js` version + sha256 | `nix/extism-js.nix` | `mise.lock`, `github:extism/js-pdk` | Plugin build fails |
 | Node major | `nix/shell.nix` (`nodejs_24`) | `mise.toml` | Build errors |
-| pnpm major | `nix/shell.nix` (`pnpm_11`) | `mise.toml` / `packageManager` | See §5.6 |
-| Python | `nix/shell.nix` (`python312`) | `machine-learning/pyproject.toml` | `uv sync` fails |
-| PostgreSQL major | `nix/shell.nix` (`postgresql_17`) | — (your existing cluster) | **Cluster won't start** — see §6.1 |
+| pnpm major | `nix/shell.nix` (`pnpm_11`) | `mise.toml` / `packageManager` | §5.6 |
+| Python | `nix/shell.nix` (`python312`) | `machine-learning/pyproject.toml` + ML Dockerfile | `uv sync` fails |
+| imagemagick, libheif, libraw | `nix/shell.nix` | **base-images** `server/sources/*.json` | Format support gaps |
+| ffmpeg | `nix/shell.nix` (`jellyfin-ffmpeg`) | base-images `server/packages/ffmpeg.json` | Transcoding issues |
+| PostgreSQL major | `nix/shell.nix` (`postgresql_17`) | — (your existing cluster) | **Cluster won't start** — §6.1 |
 | geodata snapshot | `nix/geodata.nix` | — (Internet Archive) | Reverse geocoding empty |
-| binaryen, jellyfin-ffmpeg | nixpkgs default | `mise.lock` (version only) | Rarely matters |
 
-Note `binaryen` and `jellyfin-ffmpeg` come from nixpkgs at whatever version it
-has (132 and 7.1.4-3 as of writing) rather than the exact `mise.lock` pins
-(124, 7.1.3-6). This has been fine. If ffmpeg-related transcoding misbehaves,
-the version skew is the first thing to suspect.
+### 2.1 Finding the native library versions upstream actually uses
+
+This is the part `show-upstream-pins.sh` cannot fully automate, and the part
+most likely to drift.
+
+Immich's `server/Dockerfile` builds `FROM ghcr.io/immich-app/base-server-dev:<datestamp>`.
+That datestamp identifies a point in the **base-images** repo:
+
+```bash
+# 1. which base image does this tag use?
+git -C work/immich show v3.1.0:server/Dockerfile | grep base-server-dev
+#    -> base-server-dev:202607211135      (i.e. 2026-07-21 11:35)
+
+# 2. what did base-images pin at that time?
+curl -s "https://api.github.com/repos/immich-app/base-images/commits?path=server/sources/libvips.json&until=2026-07-21T11:35:00Z&per_page=1" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['sha'])"
+# then fetch server/sources/libvips.json at that sha
+```
+
+Files to check: `server/sources/{libvips,imagemagick,libheif,libraw,libjxl,jpegli}.json`
+and `server/packages/ffmpeg.json`.
+
+`scripts/show-upstream-pins.sh` now does this resolution for you.
+
+**Result for v3.1.0 (verified 2026-09-03), and how we compare:**
+
+| Library | Upstream (v3.1.0) | This repo | |
+| --- | --- | --- | --- |
+| libvips | **8.18.4** | 8.17.3 | older — see §2.2 |
+| imagemagick | 7.1.2-21 | 7.1.2-29 | newer |
+| libheif | 1.21.2 | 1.23.1 | newer |
+| libraw | 0.22.1 | 0.22.1 | match |
+| jellyfin-ffmpeg | 7.1.4-3 | 7.1.4-3 | match |
+| libjxl | 0.11.2 | (via nixpkgs vips) | JXL verified working |
+
+> Note how much this differs from base-images `main` (libvips 8.18.5, libheif
+> 1.23.2, libraw 0.22.2-1, libjxl 0.12.0). **Always resolve by datestamp** —
+> reading `main` gives you the versions for Immich `main`, not your tag. This
+> exact mistake was made while first writing this document.
+
+### 2.2 Known divergence from upstream — libvips
+
+`nix/shell.nix` currently supplies **libvips 8.17.3** (`vips_8_17`, with
+`-Dtiff=disabled`), inherited from nixpkgs' Immich package and its comment
+`# thumbnail generation fails with vips 8.18`.
+
+**That comment is contradicted by upstream**, which ships v3.1.0 against
+libvips 8.18.4. sharp 0.34.5 requires only `>=8.17.3`, so both satisfy the
+gate — but our combination is *not* the one upstream tests.
+
+It works (verified: HEIF, JXL and WebP all functional, thumbnails generated).
+Left as-is because it is proven here, but:
+
+- Treat nixpkgs' 8.18 warning as **unverified and probably nixpkgs-specific**.
+- Moving to `vips` (8.18.x) to match upstream is a reasonable follow-up, and is
+  required anyway for Immich 3.2 (sharp 0.35.3 needs `>=8.18.3`).
+- `-Dtiff=disabled` is a separate nixpkgs workaround for raw thumbnails failing
+  with `tiff2vips: samples_per_pixel not a whole number of bytes`. Also
+  unverified against current upstream; test raw photos if you change it.
+
+Other libraries diverge by patch level in the *other* direction — we take
+nixpkgs defaults, which are mostly newer than upstream's pins (§2.1). No
+problems observed. If a specific image format misbehaves, compare against
+base-images first.
 
 ---
 
@@ -86,26 +197,30 @@ the version skew is the first thing to suspect.
 # 1. See what the new tag requires
 nix develop --command scripts/show-upstream-pins.sh v3.2.0
 
-# 2. Compare against nix/shell.nix and nix/extism-js.nix; edit as needed.
-#    The libvips line is the one that most often forces a change.
+# 2. Check native libraries against base-images for that tag (§2.1)
 
-# 3. Bump the version pin
+# 3. Read the release notes for breaking changes
+#    https://github.com/immich-app/immich/releases
+
+# 4. Compare against nix/shell.nix and nix/extism-js.nix; edit as needed
+
+# 5. Bump the version pin
 echo v3.2.0 > immich-version
 
-# 4. Build
+# 6. Build
 nix develop --command scripts/build.sh
 
-# 5. Verify (§4) before pointing at real data
+# 7. Verify (§4) BEFORE pointing at real data
 nix develop --command scripts/immich.sh start
 ```
 
-`build.sh` is idempotent and re-checks out the pinned tag, but it preserves
-`node_modules` across versions (`git clean -e node_modules`). If a build fails
-in a way that smells like stale dependencies, delete `work/immich` entirely.
+`build.sh` re-checks out the pinned tag but preserves `node_modules`
+(`git clean -e node_modules`). If a build fails in a way that smells like stale
+dependencies, delete `work/immich` entirely.
 
 ### Known upcoming change: Immich 3.2
 
-Verified by running the pins script against `v3.2.0-rc.2`:
+Verified by running the pins script against `v3.2.0-rc.2` (2026-09-03):
 
 | | v3.1.0 | v3.2.0-rc.2 |
 | --- | --- | --- |
@@ -116,15 +231,8 @@ Verified by running the pins script against `v3.2.0-rc.2`:
 | insightface | required | **dropped** |
 
 So 3.2 needs `vips_8_17` → `vips` (8.18.x) in `nix/shell.nix`, plus a new
-`extism-js` version and checksum.
-
-**Caution:** nixpkgs' `immich` package carries the comment
-`vips_8_17, # thumbnail generation fails with vips 8.18`. That was written for
-Immich 2.x/3.1. Whether it still applies once Immich itself moves to sharp
-0.35/vips 8.18 is **unverified** — test thumbnail generation for raw photos
-specifically after that bump. Note `nix/shell.nix` also builds vips with
-`-Dtiff=disabled`, which nixpkgs does because raw thumbnails otherwise fail
-with `tiff2vips: samples_per_pixel not a whole number of bytes`.
+`extism-js` version and checksum. Re-verify against the real tag when it ships —
+release candidates change.
 
 ---
 
@@ -138,8 +246,8 @@ cd .local/immich-app/server && node -p 'require("sharp").versions.vips'
 # expect the version from nix/shell.nix, e.g. 8.17.3
 
 # image formats present
-node -p 'const s=require("sharp");[s.format.heif,s.format.jxl,s.format.webp].join()'
-# expect: [object Object],[object Object],[object Object]
+node -p 'const s=require("sharp");[!!s.format.heif,!!s.format.jxl,!!s.format.webp].join()'
+# expect: true,true,true
 
 # CoreML available (Apple Silicon)
 .local/immich-app/machine-learning/.venv/bin/python \
@@ -163,6 +271,10 @@ grep -i 'Imported plugin' .local/immich-run/log/server.log
 The plugin check matters most: if the WASM build fails, Immich **still starts
 normally** and only logs a warning (`importFolder` swallows errors). You lose
 workflow templates — smart albums, screenshot archiving — with no other signal.
+
+Beyond these, exercise a real photo: upload one, confirm a thumbnail is
+generated, and confirm face detection runs. The checks above prove the
+components load, not that image processing is correct end to end.
 
 Benign log lines, safe to ignore: `ExperimentalWarning: WASI`, `Table
 smart_search does not exist` (new instance only), `Unsupported route path:
@@ -189,6 +301,8 @@ Two things must both hold:
   build use the system libvips
 
 `scripts/build.sh` does both and asserts the result. **Do not remove either.**
+Upstream does the same in `server/Dockerfile` — check there if the mechanism
+changes.
 
 Note `npm install --build-from-source` does *not* work — npm reports
 `Unknown cli config "--build-from-source"` and installs the prebuilt anyway.
@@ -217,7 +331,8 @@ upstream quirk, not a wrong download. (nixpkgs patches the same string:
 `--replace-fail '1.5.1' '${version}'`.) Trust the URL, not `--version`.
 
 If the plugin build fails after an upgrade, re-copy the version **and sha256**
-from the new tag's `mise.lock`.
+from the new tag's `mise.lock`. If nixpkgs ever unbreaks `extism-js-core` on
+Darwin, switching to it would remove a prebuilt binary from the closure.
 
 ### 5.3 PostgreSQL major version mismatch
 
@@ -227,13 +342,20 @@ nixpkgs revisions, which would have silently broken an existing cluster.
 
 `nix/shell.nix` therefore pins `postgresql_17` explicitly. See §6.1.
 
+Note upstream's compose file uses its own Postgres image
+(`ghcr.io/immich-app/postgres:14-vectorchord...` as of 3.1.0), so upstream's
+major version is not a constraint on ours — but check
+[docs.immich.app](https://docs.immich.app/install/docker-compose/) for the
+minimum Immich supports.
+
 ### 5.4 `insightface` — depends on the Immich version
 
 - v3.1.0: **required** (`insightface>=0.7.3,<2.0`), installs cleanly as a wheel
 - v3.2.0-rc: **dropped** — vendored into `immich_ml/models/facial_recognition/_ops.py`
 
 Only a string enum (`INSIGHTFACE = "insightface"`) and an attribution comment
-remain in 3.2. Do not infer the dependency from a grep of the source tree.
+remain in 3.2. Do not infer the dependency from a grep of the source tree —
+read `machine-learning/pyproject.toml` at the tag.
 
 Via `uv` this is a non-issue either way. It only mattered for the nixpkgs
 approach, where the derivation needed `mxnet` patched out and then failed on a
@@ -243,7 +365,8 @@ missing `which`.
 
 Set by `scripts/immich.sh` for the ML service. HuggingFace's xet transfer
 backend is unreliable on Darwin; without this, model downloads can hang. Carried
-over from the predecessor repo, where it was needed.
+over from the predecessor repo, where it was needed. Worth re-testing
+occasionally — it may become unnecessary.
 
 ### 5.6 pnpm self-switches version
 
@@ -265,6 +388,13 @@ error: '/path/to/nixpkgs' is a shallow Git repository, so 'revCount' is not avai
 
 Fix by appending `?shallow=1` to the flake input URL. Not an issue with the
 current `github:` input.
+
+### 5.8 Python version
+
+`nix/shell.nix` uses `python312`; `pyproject.toml` allows `>=3.11,<4.0`.
+Upstream's CPU image builds on **python 3.11**. Divergence has caused no
+problems, but if a wheel fails to resolve, matching upstream's minor version is
+the first thing to try.
 
 ---
 
@@ -295,6 +425,9 @@ macOS metadata dirs (`.fseventsd`, `.Spotlight-V100`) will fail to copy on
 volume roots — that is harmless, they are not part of the cluster. Verify by
 comparing file counts excluding those paths.
 
+Check the release notes for migration guidance before large version jumps, and
+skipping major versions is generally not supported — upgrade through them.
+
 ### 6.3 Then
 
 ```bash
@@ -305,6 +438,7 @@ nix develop --command scripts/immich.sh start
 
 `DB_VECTOR_EXTENSION=pgvector` remains valid in 3.x (`server/src/dtos/env.dto.ts`
 accepts `pgvector | vectorchord`), so a pgvector-based cluster carries over.
+Upstream now defaults to VectorChord — check the docs if search behaves oddly.
 
 ---
 
@@ -314,33 +448,20 @@ accepts `pgvector | vectorchord`), so a pgvector-based cluster carries over.
   stray checkout of a different version caused two wrong conclusions during the
   initial work (insightface's presence, and sharp's libvips requirement). Prefer
   `git show <tag>:<path>` over reading the working tree.
-- **nixpkgs' package is a useful reference but is not authoritative.** Its
-  dependency list drifts from upstream's `pyproject.toml`, and its comments
-  refer to the Immich version it packages.
+- **nixpkgs is a secondary source.** See §0.
+- **base-images is a separate repo on its own release cadence.** Its `main`
+  reflects Immich `main`, not the tag you are building. Resolve via the base
+  image datestamp (§2.1).
 - **`work/immich`'s `origin` may not be GitHub** if it was cloned from a local
   mirror. The scripts fetch tags from `$IMMICH_UPSTREAM` explicitly.
+- **Release candidates are not releases.** `v3.2.0-rc.2` figures may differ from
+  `v3.2.0`.
 
 ---
 
-## 8. Upstream references
+## 8. Reference: runtime layout
 
-| What | Where |
-| --- | --- |
-| Server build recipe | `server/Dockerfile` (the `--no-optional` + sharp rebuild dance) |
-| ML build recipe | `machine-learning/Dockerfile` (`uv sync --extra cpu`) |
-| Tool versions | `mise.toml`, `mise.lock` |
-| Plugin build | `mise.toml` `[tasks.plugins]` |
-| Runtime paths | `server/src/repositories/config.repository.ts` (`resourcePaths`) |
-| Env vars | `server/src/dtos/env.dto.ts` |
-| Plugin import (error swallowing) | `server/src/services/workflow-execution.service.ts` |
-
-Prior art for native installs: [arter97/immich-native](https://github.com/arter97/immich-native)
-(Linux, systemd), [4v3ngR/immich-native-macos](https://github.com/4v3ngR/immich-native-macos)
-(macOS, Homebrew + full Xcode, no hardware acceleration).
-
-### Runtime layout the server expects
-
-Under `IMMICH_BUILD_DATA`:
+Under `IMMICH_BUILD_DATA` (see `resourcePaths` in `config.repository.ts`):
 
 ```
 build/
@@ -351,3 +472,8 @@ build/
                                          ne_10m_admin_0_countries.geojson
   build-lock.json                        optional; version-display fallback only
 ```
+
+Prior art for native installs: [arter97/immich-native](https://github.com/arter97/immich-native)
+(Linux, systemd), [4v3ngR/immich-native-macos](https://github.com/4v3ngR/immich-native-macos)
+(macOS, Homebrew + full Xcode, no hardware acceleration). Both are useful
+cross-checks when a build step stops working.
