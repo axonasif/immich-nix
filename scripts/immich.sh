@@ -31,7 +31,7 @@ REDIS_HOST="${IMMICH_REDIS_HOST:-127.0.0.1}"
 REDIS_PORT="${IMMICH_REDIS_PORT:-6380}"
 DB_VECTOR_EXTENSION="${IMMICH_DB_VECTOR_EXTENSION:-pgvector}"
 ML_WORKERS="${IMMICH_ML_WORKERS:-1}"
-ML_WORKER_TIMEOUT="${IMMICH_ML_WORKER_TIMEOUT:-120}"
+ML_WORKER_TIMEOUT="${IMMICH_ML_WORKER_TIMEOUT:-300}"
 
 SERVER_PIDFILE="$RUN_DIR/server.pid"
 ML_PIDFILE="$RUN_DIR/machine-learning.pid"
@@ -71,7 +71,7 @@ start_service() {
   fi
 
   log "starting $name"
-  nohup /usr/bin/perl -MPOSIX=setsid \
+  nohup perl -MPOSIX=setsid \
     -e 'setsid() or die "setsid: $!"; exec @ARGV or die "exec: $!";' \
     -- "$@" >>"$logfile" 2>&1 </dev/null &
   echo "$!" >"$pidfile"
@@ -100,10 +100,14 @@ stop_service() {
 }
 
 wait_for_http() {
-  local url="$1" name="$2" tries="${3:-90}"
+  local url="$1" name="$2" pidfile="$3" tries="${4:-90}"
   for _ in $(seq 1 "$tries"); do
     curl -fsS "$url" >/dev/null 2>&1 && return 0
     sleep 1
+    if ! service_running "$pidfile"; then
+      log "$name exited before becoming healthy (see $LOG_DIR)"
+      return 1
+    fi
   done
   log "$name did not become healthy in time (see $LOG_DIR)"
   return 1
@@ -120,11 +124,11 @@ start_postgres() {
     if [[ -n "$(find "$PGDATA" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
       local tmp
       tmp="$(mktemp -d "$STATE/initdb.XXXXXX")"
-      initdb -D "$tmp" --username=postgres --encoding=UTF8 --locale=C --auth=trust >/dev/null
+      initdb -D "$tmp" --username=postgres --encoding=UTF8 --locale=C --auth=trust --data-checksums >/dev/null
       cp -R "$tmp"/. "$PGDATA"/
       rm -rf "$tmp"
     else
-      initdb -D "$PGDATA" --username=postgres --encoding=UTF8 --locale=C --auth=trust >/dev/null
+      initdb -D "$PGDATA" --username=postgres --encoding=UTF8 --locale=C --auth=trust --data-checksums >/dev/null
     fi
   fi
 
@@ -135,33 +139,22 @@ start_postgres() {
       start >/dev/null
   fi
 
+  local postgres_ready=false
   for _ in $(seq 1 30); do
-    pg_isready -h 127.0.0.1 -p "$PG_PORT" -U postgres >/dev/null 2>&1 && break
+    if pg_isready -h 127.0.0.1 -p "$PG_PORT" -U postgres >/dev/null 2>&1; then
+      postgres_ready=true
+      break
+    fi
     sleep 1
   done
+  [[ "$postgres_ready" == true ]] || die "postgres did not become ready (see $LOG_DIR/postgres.log)"
 
-  log "ensuring immich role, database and extensions"
+  # The upstream postgres entrypoint creates only the configured database.
+  # Immich itself creates and updates extensions, then runs schema migrations.
+  log "ensuring immich database"
   psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$PG_PORT" -U postgres postgres >/dev/null <<'SQL'
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'immich') THEN
-    CREATE ROLE immich LOGIN;
-  END IF;
-END
-$$;
-
-SELECT 'CREATE DATABASE immich OWNER immich'
+SELECT 'CREATE DATABASE immich OWNER postgres'
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'immich') \gexec
-SQL
-
-  psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -p "$PG_PORT" -U postgres immich >/dev/null <<'SQL'
-CREATE EXTENSION IF NOT EXISTS "unaccent";
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "cube";
-CREATE EXTENSION IF NOT EXISTS "earthdistance";
-CREATE EXTENSION IF NOT EXISTS "pg_trgm";
-CREATE EXTENSION IF NOT EXISTS "vector";
-ALTER SCHEMA public OWNER TO immich;
 SQL
 }
 
@@ -208,21 +201,22 @@ start_ml() {
   start_service "machine-learning on $ML_HOST:$ML_PORT" "$ML_PIDFILE" \
     "$LOG_DIR/machine-learning.log" \
     env -C "$PREFIX/machine-learning" \
+    PATH="$PREFIX/machine-learning/.venv/bin:$PATH" \
+    VIRTUAL_ENV="$PREFIX/machine-learning/.venv" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    TRANSFORMERS_CACHE="$CACHE_DIR" \
     MACHINE_LEARNING_CACHE_FOLDER="$CACHE_DIR" \
+    MACHINE_LEARNING_WORKERS="$ML_WORKERS" \
+    MACHINE_LEARNING_WORKER_TIMEOUT="$ML_WORKER_TIMEOUT" \
     XDG_CACHE_HOME="$CACHE_DIR" \
     IMMICH_HOST="$ML_HOST" \
     IMMICH_PORT="$ML_PORT" \
     `# huggingface's xet transfer backend is unreliable on darwin` \
     HF_HUB_DISABLE_XET=1 \
-    "$PREFIX/machine-learning/.venv/bin/gunicorn" \
-    immich_ml.main:app \
-    -k immich_ml.config.CustomUvicornWorker \
-    -w "$ML_WORKERS" \
-    -b "$ML_HOST:$ML_PORT" \
-    -t "$ML_WORKER_TIMEOUT" \
-    --log-config-json "$PREFIX/machine-learning/immich_ml/log_conf.json"
+    "$PREFIX/machine-learning/.venv/bin/python" -m immich_ml
 
-  wait_for_http "http://$ML_HOST:$ML_PORT/ping" "machine-learning"
+  wait_for_http "http://$ML_HOST:$ML_PORT/ping" "machine-learning" "$ML_PIDFILE"
 }
 
 # --- server ------------------------------------------------------------------
@@ -237,13 +231,13 @@ start_server() {
     IMMICH_HOST="$HTTP_HOST" \
     IMMICH_PORT="$HTTP_PORT" \
     IMMICH_MACHINE_LEARNING_URL="http://$ML_HOST:$ML_PORT" \
-    DB_URL="postgresql://immich@127.0.0.1:$PG_PORT/immich" \
+    DB_URL="postgresql://postgres@127.0.0.1:$PG_PORT/immich" \
     DB_VECTOR_EXTENSION="$DB_VECTOR_EXTENSION" \
     REDIS_HOSTNAME="$REDIS_HOST" \
     REDIS_PORT="$REDIS_PORT" \
     node "$PREFIX/server/dist/main"
 
-  wait_for_http "http://$HTTP_HOST:$HTTP_PORT/api/server/ping" "immich server"
+  wait_for_http "http://$HTTP_HOST:$HTTP_PORT/api/server/ping" "immich server" "$SERVER_PIDFILE"
 }
 
 # --- commands ----------------------------------------------------------------
