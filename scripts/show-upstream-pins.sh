@@ -95,8 +95,11 @@ PY
 # immich builds FROM a dated base image; that datestamp identifies a point in
 # the base-images repo, which is where the real native library versions live.
 
-bold "native libraries -> nix/shell.nix"
+bold "base server -> nix/shell.nix, nix/geodata.nix"
 base_tag="$(show server/Dockerfile | sed -n 's|.*base-server-dev:\([0-9]\{12\}\).*|\1|p' | head -1)"
+base_prod_image="$(show server/Dockerfile \
+  | sed -n 's|^FROM \(ghcr.io/immich-app/base-server-prod:[^ ]*\).*|\1|p' \
+  | head -1)"
 
 if [[ -z "$base_tag" ]]; then
   warn "  could not find a base-server-dev tag in server/Dockerfile"
@@ -104,6 +107,7 @@ if [[ -z "$base_tag" ]]; then
 else
   until_ts="${base_tag:0:4}-${base_tag:4:2}-${base_tag:6:2}T${base_tag:8:2}:${base_tag:10:2}:00Z"
   echo "  base image : base-server-dev:$base_tag  ($until_ts)"
+  echo "  prod image : ${base_prod_image:-<unknown>}"
 
   api="https://api.github.com/repos/immich-app/base-images/commits"
   raw="https://raw.githubusercontent.com/immich-app/base-images"
@@ -162,8 +166,9 @@ echo
 
 bold "reminder"
 cat <<'EOF'
-  - geodata (nix/geodata.nix) is independent of the immich tag; refresh it only
-    deliberately, and update timestamp + hash together.
+  - geodata (nix/geodata.nix) comes from the pinned base-server-prod image.
+    When that image changes, update its image digest, /build layer digest, and
+    fixed-output hash together.
   - nix/shell.nix pins postgresql_17. An existing cluster CANNOT be started by a
     different major version -- see UPGRADING.md before bumping.
 EOF

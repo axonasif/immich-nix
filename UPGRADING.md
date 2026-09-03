@@ -150,7 +150,7 @@ Immich tag.
 | PostgreSQL runtime profile | `scripts/immich.sh` | base-images `postgres/postgresql.{ssd,hdd}.conf` | Startup failure or poor database performance |
 | Valkey major + nixpkgs package | `flake.lock`, `nix/shell.nix`, `scripts/immich.sh` | Compose cache image tag + server Redis client/config | Jobs and cache stop working |
 | Service commands and env contract | `scripts/immich.sh` | Compose, Dockerfiles, entrypoints, env schemas | A service fails at startup or silently loses functionality |
-| geodata snapshot | `nix/geodata.nix` | — (Internet Archive) | Reverse geocoding empty |
+| geodata image/layer + output hash | `nix/geodata.nix` | pinned `base-server-prod` image | Reverse geocoding is stale or empty |
 
 ### 2.1 Finding the native library versions upstream actually uses
 
@@ -445,6 +445,12 @@ For each release, re-establish these invariants:
   it does not provide the image's `redis-*` compatibility command names.
   Recheck commands, persistence, authentication, and memory/eviction settings
   whenever the image or Valkey major changes.
+- **Geodata image contract.** Extract geodata from the exact
+  `base-server-prod` image pinned by Immich rather than rebuilding it from
+  mutable GeoNames URLs. When that image changes, identify the layer produced
+  by `COPY /build/ /build/`, update `imageDigest` and `layerDigest` together,
+  then replace the fixed-output hash. Verify the five files and
+  `geodata-date.txt` against the image before accepting the update.
 - **Lifecycle and health.** Docker restart policies and periodic health checks
   are not supplied by this native runner. Keep startup failure detection and
   clean signal handling working. Upstream's PostgreSQL health check also checks

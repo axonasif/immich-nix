@@ -85,7 +85,7 @@ immich-admin --help    # list-users, grant-admin, reset passwords, ...
 | `immich-version` | the Immich tag to build — the single version pin |
 | `nix/shell.nix` | toolchain and native libraries |
 | `nix/extism-js.nix` | upstream `extism-js` release binary (builds the WASM plugin) |
-| `nix/geodata.nix` | reverse-geocoding data, as a fixed-output derivation |
+| `nix/geodata.nix` | upstream image's reverse-geocoding data, as a fixed-output derivation |
 | `nix/patches/` | libvips patch vendored from upstream's base-images |
 | `scripts/patch-postgres-bin-path.py` | drops Immich's hardcoded Debian postgres path |
 | `scripts/show-upstream-pins.sh` | read every upstream pin out of an Immich tag |
