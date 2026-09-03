@@ -226,6 +226,67 @@ upstream. sharp 0.34.5 accepts `>=8.17.3` so the old pin was not *broken*, just
 untested by upstream — and it would have blocked Immich 3.2 (sharp 0.35.3 needs
 `>=8.18.3`) anyway.
 
+### 2.3 Version drift policy — deliberate
+
+We take nixpkgs' versions rather than pinning upstream's exactly. Ours are
+generally *newer*, not older (§2.1): vips 8.18.6 vs 8.18.4, imagemagick
+7.1.2-29 vs -21, libheif 1.23.1 vs 1.21.2.
+
+**This is accepted, not an oversight.** Pinning exactly would mean overriding
+each `src` to older releases, carrying unfixed CVEs, and fighting the nixpkgs
+closure for no functional gain.
+
+The rule: **match the major/minor, allow a newer patch level.** A *minor*
+divergence (e.g. vips 8.17 vs 8.18) is a real problem and must be corrected —
+that is what §2.2 is about. A patch-level divergence is fine.
+
+If a specific image format misbehaves, compare against base-images first — the
+drift is the obvious suspect even though it is usually innocent.
+
+### 2.4 Known non-alignments (investigated, deliberately not fixed)
+
+**jpegli as the libjpeg implementation — impossible on macOS.**
+Upstream replaces libjpeg entirely with jpegli's libjpeg-compatible shim; their
+Dockerfile says so: *"the final image uses jpegli (/usr/local/lib/libjpeg.so.62)
+built alongside libjxl"*. So every JPEG the official image encodes goes through
+jpegli, which produces smaller files at equal quality. Ours uses libjpeg-turbo.
+
+This cannot be aligned. The shim is gated out on Apple in the source
+(`lib/jpegli.cmake`):
+
+```cmake
+if (JPEGXL_ENABLE_JPEGLI_LIBJPEG AND NOT APPLE AND NOT WIN32 AND NOT EMSCRIPTEN)
+```
+
+The reason is concrete: the target is linked with
+`-Wl,--version-script=jpeg.version.62`, GNU ld symbol versioning, which Apple's
+linker has no equivalent for. Verified by building nixpkgs' `jpegli` with
+`JPEGXL_ENABLE_JPEGLI_LIBJPEG=ON` + `INSTALL_JPEGLI_LIBJPEG=ON`: it builds and
+installs `cjpegli`/`djpegli`, but **no libjpeg shim and no jpeglib.h** — the
+guard silently skips the target.
+
+Aligning would mean patching out a platform guard and dropping the version
+script, producing a configuration nobody upstream builds or tests, underneath a
+photo server. Impact of *not* doing it is file size, not correctness. Revisit
+only if upstream enables it on Apple.
+
+**libspng — flag flip does not work.**
+Upstream installs `libspng-dev` so vips prefers spng over libpng for decoding.
+nixpkgs explicitly disables it: `(lib.mesonEnable "spng" false) # we want to
+use libpng`.
+
+Overriding looks trivial (we already override vips) but **does not work**:
+with `-Dspng=enabled` plus `libspng` in `buildInputs`, meson accepts the option
+and compiles `spngload.c`, yet the meson summary still reports
+`PNG load/save with libpng: YES` and the built `libvips.dylib` has no reference
+to `libspng`. vips looks it up with `required: false` first
+(`dependency('spng', ...)`), so it degrades silently rather than failing.
+
+Adding `lib.getDev libspng` explicitly — `overrideAttrs` runs after
+`chooseDevOutputs`, so a bare append gives the `out` output and misses
+`spng.pc` — did not fix it either. Whatever else is wrong is unbounded to chase,
+and the payoff is PNG *decode speed* only. Left alone deliberately.
+
 Other libraries diverge by patch level in the *other* direction — we take
 nixpkgs defaults, which are mostly newer than upstream's pins (§2.1). No
 problems observed. If a specific image format misbehaves, compare against
