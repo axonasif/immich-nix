@@ -2,6 +2,7 @@
   lib,
   mkShell,
   stdenv,
+  callPackage,
 
   # toolchain
   nodejs_24,
@@ -10,6 +11,9 @@
   uv,
   node-gyp,
   pkg-config,
+
+  # plugin (WASM) toolchain
+  binaryen,
 
   # image / media libraries
   vips_8_17,
@@ -44,6 +48,8 @@ let
   });
 
   postgresql' = postgresql_17.withPackages (ps: [ ps.pgvector ]);
+
+  extism-js = callPackage ./extism-js.nix { };
 in
 mkShell {
   name = "immich-native";
@@ -55,6 +61,9 @@ mkShell {
     uv
     node-gyp
     pkg-config
+
+    binaryen
+    extism-js
 
     vips'
     libraw
