@@ -16,8 +16,7 @@ Immich 3.x's WASM plugin cannot build at all), and Nix-built `onnxruntime` has
 no CoreML support.
 
 Building with upstream's own tooling avoids both, and machine learning gets
-**CoreML acceleration** from the upstream wheels — which the Homebrew-based
-native installers explicitly don't offer.
+**CoreML acceleration** from the upstream wheels.
 
 Also works on Linux, though there you may as well use upstream's containers.
 
