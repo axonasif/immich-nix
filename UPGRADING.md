@@ -616,6 +616,11 @@ Upstream now defaults to VectorChord — check the docs if search behaves oddly.
   it about a *different* tag gives the wrong answer. `show-upstream-pins.sh`
   handles this — it reads locally only when the tag matches the pin, and says
   which source it used.
+- **`git submodule update --init --depth 1` fetches the commit but not the
+  tag**, so `git -C upstream/immich describe --tags` comes back empty on a
+  freshly initialised checkout. This is harmless — `build.sh` sees no matching
+  tag, fetches it, and checks out — but it is confusing if you are inspecting
+  the submodule by hand. `git clone --recurse-submodules` does fetch the tag.
 - **`upstream/immich` is both reference and build tree.** `scripts/build.sh`
   patches it (§8) and pnpm fills it with build output, so it will show as dirty;
   `.gitmodules` sets `ignore = dirty` for it. Do not keep local edits there.
