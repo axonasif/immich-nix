@@ -8,16 +8,17 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC_DIR="${IMMICH_SRC_DIR:-$REPO_ROOT/work/immich}"
+SRC_DIR="${IMMICH_SRC_DIR:-$REPO_ROOT/upstream/immich}"
 UPSTREAM="${IMMICH_UPSTREAM:-https://github.com/immich-app/immich.git}"
 TAG="${1:-$(cat "$REPO_ROOT/immich-version")}"
 
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m%s\033[0m\n' "$*" >&2; }
 
-if [[ ! -d "$SRC_DIR/.git" ]]; then
-  mkdir -p "$(dirname "$SRC_DIR")"
-  git clone -q --depth=1 --branch "$TAG" "$UPSTREAM" "$SRC_DIR"
+if [[ ! -d "$SRC_DIR/.git" && ! -f "$SRC_DIR/.git" ]]; then
+  echo "submodule missing at $SRC_DIR" >&2
+  echo "run: git submodule update --init --depth 1" >&2
+  exit 1
 fi
 
 if ! git -C "$SRC_DIR" rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
@@ -107,7 +108,27 @@ else
   api="https://api.github.com/repos/immich-app/base-images/commits"
   raw="https://raw.githubusercontent.com/immich-app/base-images"
 
+  # The base-images submodule is pinned to the revision matching immich-version,
+  # so read it locally when asked about that same tag -- no network, and exactly
+  # what we build against. For any other tag, resolve over the API instead.
+  pinned_tag="$(cat "$REPO_ROOT/immich-version" 2>/dev/null || echo "")"
+  base_dir="$REPO_ROOT/upstream/base-images"
+  use_local=0
+  if [[ "$TAG" == "$pinned_tag" && -d "$base_dir/server/sources" ]]; then
+    use_local=1
+    echo "  source     : upstream/base-images submodule @ $(git -C "$base_dir" rev-parse --short HEAD)"
+  else
+    echo "  source     : github api (submodule is pinned to ${pinned_tag:-?}, not $TAG)"
+  fi
+
   for lib in libvips imagemagick libheif libraw libjxl; do
+    if (( use_local )); then
+      ver="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' \
+        "$base_dir/server/sources/$lib.json" 2>/dev/null || true)"
+      printf '    %-13s %s\n' "$lib" "${ver:-<unknown>}"
+      continue
+    fi
+
     sha="$(curl -fsSL "$api?path=server/sources/$lib.json&until=$until_ts&per_page=1" 2>/dev/null \
       | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[0]["sha"] if d else "")' 2>/dev/null || true)"
     if [[ -z "$sha" ]]; then

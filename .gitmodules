@@ -1,0 +1,9 @@
+[submodule "upstream/immich"]
+	path = upstream/immich
+	url = https://github.com/immich-app/immich.git
+	shallow = true
+	ignore = dirty
+[submodule "upstream/base-images"]
+	path = upstream/base-images
+	url = https://github.com/immich-app/base-images.git
+	shallow = true

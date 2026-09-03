@@ -1,40 +1,81 @@
 # immich-native-nix
 
-Runs [Immich](https://immich.app) natively on macOS (Apple Silicon) and Linux —
-no Docker, no VM.
+Run [Immich](https://immich.app) natively on macOS — no Docker, no VM.
 
-Nix supplies the toolchain and native libraries; Immich itself is built from
-source with its own `pnpm` and `uv`. That split is deliberate: packaging Immich
-as a full Nix derivation means maintaining `pnpmDeps` hashes and a Python
-package set, and on Darwin it hits two hard walls — `extism-js-core` is marked
-broken (so the WASM plugin can't build at all), and the Nix-built `onnxruntime`
-has no CoreML support.
+**The goal is low complexity and low effort.** Immich's own recommendation is
+docker-compose, which on macOS means running a Linux VM and paying its
+virtualisation and filesystem overhead. This gets you a working Immich on the
+Mac itself with a handful of commands, and keeps the moving parts few enough
+that upgrading is editing one version file and rebuilding.
 
-Building from source with upstream's own tooling avoids both, and the machine
-learning component gets **CoreML acceleration** from the upstream wheels.
+Nix supplies the toolchain and native libraries; Immich is built from source
+with its own `pnpm` and `uv`. That split is deliberate — packaging Immich as a
+full Nix derivation means maintaining `pnpmDeps` hashes and a Python package
+set, and on Darwin it hits two walls: nixpkgs marks `extism-js-core` broken (so
+Immich 3.x's WASM plugin cannot build at all), and Nix-built `onnxruntime` has
+no CoreML support.
+
+Building with upstream's own tooling avoids both, and machine learning gets
+**CoreML acceleration** from the upstream wheels — which the Homebrew-based
+native installers explicitly don't offer.
+
+Also works on Linux, though there you may as well use upstream's containers.
 
 ## Requirements
 
-- Nix with flakes enabled
-- macOS on Apple Silicon, or Linux
+- [Nix](https://nixos.org/download/) with flakes enabled
+- macOS on Apple Silicon (or Linux)
 
-## Usage
+Nothing else — no Homebrew, no Xcode, no Node or Python on your system.
+
+## Setup
+
+This repo uses git submodules (a pinned checkout of Immich, which is what gets
+built, plus upstream's base-images for reference), so **clone recursively**:
+
+```bash
+git clone --recurse-submodules https://github.com/<you>/immich-native-nix
+cd immich-native-nix
+```
+
+Already cloned without `--recurse-submodules`? Fetch them after the fact:
+
+```bash
+git submodule update --init --depth 1
+```
+
+Then build and run:
 
 ```bash
 nix develop                # enter the toolchain shell
-scripts/build.sh           # build immich into .local/immich-app
+scripts/build.sh           # build immich into .local/immich-app  (slow first time)
 scripts/immich.sh start    # start postgres, redis, ML and the server
 ```
 
-Then open <http://127.0.0.1:2283>.
+Then open <http://127.0.0.1:2283> and create your admin account.
 
-Other commands:
+The first build downloads a lot (nixpkgs closure, pnpm and Python deps) and
+compiles `sharp` against the Nix libvips; later builds are much faster.
+
+Everything lands under `.local/` — the built app in `.local/immich-app`, and
+postgres, redis, logs and media in `.local/immich-run`. Nothing is installed
+system-wide, and removing the repo removes the install.
+
+## Day-to-day
 
 ```bash
 scripts/immich.sh status
 scripts/immich.sh logs
 scripts/immich.sh stop
 scripts/immich.sh restart
+```
+
+The Immich CLI and admin tool are built too:
+
+```bash
+export PATH="$PWD/.local/immich-app/bin:$PATH"
+immich --help          # upload CLI
+immich-admin --help    # list-users, grant-admin, reset passwords, ...
 ```
 
 ## Layout
@@ -49,7 +90,8 @@ scripts/immich.sh restart
 | `nix/patches/` | libvips patch vendored from upstream's base-images |
 | `scripts/patch-postgres-bin-path.py` | drops Immich's hardcoded Debian postgres path |
 | `scripts/show-upstream-pins.sh` | read every upstream pin out of an Immich tag |
-| `work/immich` | Immich source checkout (gitignored) |
+| `upstream/immich` | **submodule** — Immich source; this is what gets built |
+| `upstream/base-images` | **submodule** — upstream's native-library builds, for reference |
 | `.local/immich-app` | built application, incl. `bin/immich` and `bin/immich-admin` (gitignored) |
 | `.local/immich-run` | runtime state: postgres, redis, logs, media (gitignored) |
 
@@ -78,6 +120,10 @@ Other knobs: `IMMICH_HTTP_HOST`, `IMMICH_HTTP_PORT`, `IMMICH_ML_HOST`,
 not enough: Immich releases move `sharp` (which gates on a specific libvips
 version at compile time), `extism-js`, and the toolchain versions, and each has
 a counterpart in `nix/`.
+
+Bumping the tag also moves the `upstream/immich` submodule — `scripts/build.sh`
+checks it out to match `immich-version`, so commit the submodule pointer
+afterwards to record it.
 
 Start by diffing the new tag's requirements against what this repo pins:
 

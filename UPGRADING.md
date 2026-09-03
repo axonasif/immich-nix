@@ -45,11 +45,26 @@ feature is unavailable.
 | Deployment shape, PG image | [docs.immich.app/install/docker-compose](https://docs.immich.app/install/docker-compose/), `docker/docker-compose.yml` |
 | Release/breaking changes | [Immich releases](https://github.com/immich-app/immich/releases) |
 
+Both upstream repos are vendored as **submodules**, pinned to the revisions this
+build targets, so the reference is local and matches what we build:
+
+| Submodule | Pinned to |
+| --- | --- |
+| `upstream/immich` | the tag in `immich-version` — this is also the tree that gets built |
+| `upstream/base-images` | the base-images revision that tag's base image was built from (§2.1) |
+
 Read the source **at the tag you are building**, not `main`:
 
 ```bash
-git -C work/immich show v3.1.0:server/Dockerfile
+git -C upstream/immich show v3.1.0:server/Dockerfile
+cat upstream/base-images/server/sources/libvips.json
 ```
+
+Note **nix cannot read files inside a submodule** — they are not tracked by the
+parent repo, so a flake path like `./upstream/base-images/...` fails with
+"not tracked by Git". Anything nix needs must be copied under `nix/`; that is
+why the libvips patch is vendored there, and why `scripts/build.sh` diffs the
+copy against the submodule on every build.
 
 `scripts/show-upstream-pins.sh <tag>` automates most of this.
 
@@ -596,8 +611,14 @@ Upstream now defaults to VectorChord — check the docs if search behaves oddly.
 - **base-images is a separate repo on its own release cadence.** Its `main`
   reflects Immich `main`, not the tag you are building. Resolve via the base
   image datestamp (§2.1).
-- **`work/immich`'s `origin` may not be GitHub** if it was cloned from a local
-  mirror. The scripts fetch tags from `$IMMICH_UPSTREAM` explicitly.
+- **The submodules are pinned, so they lag `main`.** `upstream/base-images` in
+  particular is checked out at the revision matching `immich-version`; querying
+  it about a *different* tag gives the wrong answer. `show-upstream-pins.sh`
+  handles this — it reads locally only when the tag matches the pin, and says
+  which source it used.
+- **`upstream/immich` is both reference and build tree.** `scripts/build.sh`
+  patches it (§8) and pnpm fills it with build output, so it will show as dirty;
+  `.gitmodules` sets `ignore = dirty` for it. Do not keep local edits there.
 - **Release candidates are not releases.** `v3.2.0-rc.2` figures may differ from
   `v3.2.0`.
 

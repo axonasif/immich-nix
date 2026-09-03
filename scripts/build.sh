@@ -8,7 +8,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 IMMICH_VERSION="${IMMICH_VERSION:-$(cat "$REPO_ROOT/immich-version")}"
-SRC_DIR="${IMMICH_SRC_DIR:-$REPO_ROOT/work/immich}"
+SRC_DIR="${IMMICH_SRC_DIR:-$REPO_ROOT/upstream/immich}"
 PREFIX="${IMMICH_PREFIX:-$REPO_ROOT/.local/immich-app}"
 UPSTREAM="${IMMICH_UPSTREAM:-https://github.com/immich-app/immich.git}"
 
@@ -21,12 +21,12 @@ die() { printf '\033[1;31m[build]\033[0m %s\n' "$*" >&2; exit 1; }
 
 # --- source ------------------------------------------------------------------
 
+# The immich source is the upstream/immich submodule -- it doubles as the local
+# pinned reference. immich-version stays authoritative; the submodule is checked
+# out to match it, and the recorded gitlink is just a convenience snapshot.
 fetch_source() {
-  if [[ ! -d "$SRC_DIR/.git" ]]; then
-    log "cloning immich $IMMICH_VERSION"
-    mkdir -p "$(dirname "$SRC_DIR")"
-    git clone -q --depth=1 --branch "$IMMICH_VERSION" "$UPSTREAM" "$SRC_DIR"
-    return
+  if [[ ! -d "$SRC_DIR/.git" && ! -f "$SRC_DIR/.git" ]]; then
+    die "submodule missing at $SRC_DIR -- run: git submodule update --init --depth 1"
   fi
 
   local current
@@ -36,9 +36,13 @@ fetch_source() {
     return
   fi
 
-  log "checking out immich $IMMICH_VERSION"
-  git -C "$SRC_DIR" fetch -q --depth=1 "$UPSTREAM" "refs/tags/$IMMICH_VERSION:refs/tags/$IMMICH_VERSION"
+  log "checking out immich $IMMICH_VERSION in the submodule"
+  if ! git -C "$SRC_DIR" rev-parse -q --verify "refs/tags/$IMMICH_VERSION" >/dev/null; then
+    git -C "$SRC_DIR" fetch -q --depth=1 "$UPSTREAM" "refs/tags/$IMMICH_VERSION:refs/tags/$IMMICH_VERSION"
+  fi
   git -C "$SRC_DIR" checkout -q --force "$IMMICH_VERSION"
+  # -x removes ignored files too (node_modules, dist, web/build); keep
+  # node_modules so a version bump does not force a full reinstall.
   git -C "$SRC_DIR" clean -qfdx -e node_modules
 }
 
@@ -56,6 +60,26 @@ patch_source() {
   local backup_service=server/src/services/database-backup.service.ts
   git checkout -- "$backup_service"
   python3 "$REPO_ROOT/scripts/patch-postgres-bin-path.py" "$backup_service"
+}
+
+# nix cannot read files inside a submodule (they are not tracked by the parent
+# repo), so the libvips patch has to be vendored under nix/. Check it against
+# the submodule so the copy cannot drift unnoticed.
+check_vendored_patches() {
+  local vendored="$REPO_ROOT/nix/patches/0001-put-other-loaders-ahead-of-dcrawload.patch"
+  local upstream_patch="$REPO_ROOT/upstream/base-images/server/sources/libvips-patches/0001-put-other-loaders-ahead-of-dcrawload.patch"
+
+  if [[ ! -f "$upstream_patch" ]]; then
+    log "base-images submodule not checked out; skipping patch drift check"
+    return 0
+  fi
+
+  if ! diff -q "$vendored" "$upstream_patch" >/dev/null; then
+    die "nix/patches/ has drifted from upstream/base-images.
+     Refresh it:  cp '$upstream_patch' '$vendored'
+     then re-check UPGRADING.md 2.2 -- the patch may have changed meaning."
+  fi
+  log "vendored libvips patch matches base-images"
 }
 
 # --- javascript --------------------------------------------------------------
@@ -196,6 +220,7 @@ build_ml() {
 # --- main --------------------------------------------------------------------
 
 fetch_source
+check_vendored_patches
 patch_source
 build_js
 deploy_server
