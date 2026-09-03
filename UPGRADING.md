@@ -116,8 +116,14 @@ rebased on each upgrade. It collapsed on Immich 3.x for reasons that are
    failed fix attempt (NixOS/nixpkgs#523442).
 
 2. **Nix-built `onnxruntime` has no CoreML execution provider**, so ML runs
-   CPU-only. Upstream's PyPI wheel ships CoreML — a real hardware-acceleration
-   difference on Apple Silicon.
+   CPU-only. Upstream's PyPI wheel ships CoreML, which is why the wheels are
+   used here.
+
+   Note this argument is weaker than it looks: on Apple Silicon the CoreML
+   provider turned out to be unusable in practice — it aborts the ML worker
+   mid-inference and cannot compile the larger CLIP models at all, so this
+   repo ships a flag to disable it (see 5.9). The wheels are still the right
+   choice, but for `extism-js` and packaging cost, not for CoreML.
 
 Plus ongoing costs: `pnpmDeps` hashes to re-derive per version, a Python
 package set to keep working, and a nixpkgs fork to rebase. During the attempt,
@@ -699,6 +705,89 @@ current `github:` input.
 Upstream's CPU image builds on **python 3.11**. Divergence has caused no
 problems, but if a wheel fails to resolve, matching upstream's minor version is
 the first thing to try.
+
+### 5.9 CoreML on Apple Silicon — works, except for large CLIP models
+
+Measured on an M1 Pro (16 GB), Immich v3.1.0, onnxruntime 1.26.0, 2026-09-03.
+
+**CoreML is worth using.** With `ViT-B-16-SigLIP2__webli` it indexed a
+9,331-asset library in about five minutes and never crashed, cold cache
+included:
+
+| Arm | Throughput | p50 latency |
+| --- | --- | --- |
+| CoreML, production smart-search | **32-37 img/s** | — |
+| CoreML, isolated, 1 thread | 59.8 img/s | 16.7 ms |
+| CoreML, isolated, 10 threads | 59.9 img/s | 166.9 ms |
+| CPU, isolated, 1 thread | 4.9 img/s | 203.6 ms |
+| CPU, isolated, 2 threads (Immich's default) | 7.3 img/s | 273.6 ms |
+| CPU, isolated, 9 threads | 17.0 img/s | 520.5 ms |
+
+CoreML saturates at ~60 img/s and serializes cleanly — extra threads add
+latency, not throughput. It is roughly **3.5x faster than CPU** at the best CPU
+thread count and **12x** single-threaded.
+
+The one real cost: cold model load is **~38 s on CoreML vs ~1 s on CPU**
+(compiling/reading the MLProgram). With `model_ttl = 300`, an idle instance
+unloads the model, so the first search after five minutes idle pays that 38 s.
+
+`scripts/build.sh` patches `SUPPORTED_PROVIDERS` so CoreML can be switched off
+without editing source, as an escape hatch:
+
+```bash
+MACHINE_LEARNING_DISABLE_COREML=1 scripts/immich.sh start
+```
+
+#### Large CLIP models cannot compile — this part is real
+
+`ViT-SO400M-16-SigLIP2-512__webli` (1.72 GB visual tower, static input
+`[1, 3, 512, 512]`) never finishes. Almost all weights are serialised as *text
+immediates* into `model.mil` instead of the binary blob:
+
+```
+visual/coreml/<hash>/0_dynamic_mlprogram/model/
+  compiled_model.mlmodelc/model.mil          6262 MB   <- hex float literals
+  compiled_model.mlmodelc/weights/weight.bin    9 MB   <- should hold these
+```
+
+`coremlcompiler` then parses 6.3 GB of ASCII; it wrote nothing for a 9-minute
+run. Note `_dynamic_` in the path despite fully static inputs — ORT split the
+graph into 3 partitions (1066/1069 nodes on CoreML), which appears to defeat
+static shape inference. **Root cause inside ORT was not confirmed.** Stick to
+B-16-class models on CoreML, or use the flag above for the big ones.
+
+#### The MTLCompilerService crash loop — transient, and how to clear it
+
+After the SO400M attempts, every B-16 load aborted mid-inference:
+
+```
+Unable to reach MTLCompilerService. ... error 3 - No such process
+MPSKernelDAG.mm:1382: failed assertion `Error getting visible function'
+WARNING  Worker (pid:NNNNN) was sent SIGABRT!
+```
+
+41 worker boots across 9 gunicorn masters, ~41 s apart (the model reload), for
+a measured 5.3 img/min. **It cleared after a `scripts/immich.sh stop --force`
+and has not returned.**
+
+These were each tested and are *not* the cause:
+
+| Suspected | Result |
+| --- | --- |
+| Request concurrency | No crash at 1, 2, 4, 9 or 10 threads on one session |
+| `setsid` detaching from the bootstrap namespace | No crash; 60.3 img/s detached |
+| Concurrent cold-load race in `base.py:load()` (no lock) | Log shows one load per worker, no `Attempt #N` |
+| Competing ML servers | Every master shut down before the next; no bind errors |
+| Cold/partial CoreML compile cache | Deleted the cache and re-ran under full load: compiled fine, no crash |
+
+`error 3 - No such process` means the Metal compiler XPC service was not
+running at all — a system-level failure, not an Immich or ORT one. The most
+plausible trigger is the SO400M compile above wedging MTLCompilerService, since
+the errors began immediately after those attempts and cleared once all stray
+processes were killed. **Not proven.**
+
+If it recurs: `scripts/immich.sh stop --force`, confirm no stray `python`/
+`postgres` remain, then restart. Fall back to the flag only if that fails.
 
 ---
 

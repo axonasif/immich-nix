@@ -60,6 +60,15 @@ patch_source() {
   local backup_service=server/src/services/database-backup.service.ts
   git checkout -- "$backup_service"
   python3 "$REPO_ROOT/scripts/patch-postgres-bin-path.py" "$backup_service"
+
+  # onnxruntime's CoreML provider aborts the ML worker on Apple Silicon (an MPS
+  # assertion, "Unable to reach MTLCompilerService"), and wedges outright on
+  # large models. Upstream has no way to disable a provider, so make it a flag:
+  #   MACHINE_LEARNING_DISABLE_COREML=1  ->  CPU only
+  # Default behaviour is unchanged. See UPGRADING.md 5.9.
+  local ml_constants=machine-learning/immich_ml/models/constants.py
+  git checkout -- "$ml_constants"
+  python3 "$REPO_ROOT/scripts/patch-disable-coreml.py" "$ml_constants"
 }
 
 # nix cannot read files inside a submodule (they are not tracked by the parent
