@@ -125,6 +125,88 @@ wait_for_http() {
   return 1
 }
 
+# --- port / orphan handling --------------------------------------------------
+# Services are tracked by pidfile, but pidfiles live under $STATE. If that goes
+# away (deleted, or a crash mid-run) the script loses track of running services
+# while the ports stay bound. Starting into that produced a confusing failure:
+# the new api worker died with EADDRINUSE while wait_for_http was satisfied by
+# the *orphan* still answering on the same port, so start reported success.
+
+listeners_on_port() {
+  # lsof exits 1 when nothing matches, which would trip `set -e` in callers.
+  lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | sort -u | tr '\n' ' ' || true
+}
+
+# Processes belonging to *this* checkout. Path matching alone is not enough:
+# immich renames its workers ("immich-api", "immich-microservices"), so their
+# command lines no longer mention $PREFIX at all -- that is exactly how an
+# orphaned api worker kept port 2283 while every pkill -f pattern missed it.
+# So also take whatever is listening on our ports.
+stray_pids() {
+  {
+    pgrep -f "$PREFIX" 2>/dev/null || true
+    pgrep -f "$STATE" 2>/dev/null || true
+    pgrep -f "valkey-server $REDIS_HOST:$REDIS_PORT" 2>/dev/null || true
+    listeners_on_port "$HTTP_PORT" | tr ' ' '\n'
+    listeners_on_port "$ML_PORT" | tr ' ' '\n'
+    listeners_on_port "$PG_PORT" | tr ' ' '\n'
+    listeners_on_port "$REDIS_PORT" | tr ' ' '\n'
+  } | sed '/^$/d' | sort -nu | grep -v "^$$\$" || true
+}
+
+# Refuse to start a service whose port is held by something we are not tracking.
+require_port_free() {
+  local port="$1" name="$2" pids
+  pids="$(listeners_on_port "$port")"
+  [[ -z "$pids" ]] && return 0
+
+  die "port $port is already in use by PID(s): ${pids% }
+     Something is still listening for '$name' that this script is not tracking
+     (most often a leftover from a previous run whose pidfiles were removed).
+     Inspect it with:  lsof -nP -iTCP:$port -sTCP:LISTEN
+     Clear ours with:  $0 stop --force"
+}
+
+preflight_ports() {
+  # Only guard services we are about to start; an already-tracked service is
+  # fine, because start is idempotent.
+  service_running "$SERVER_PIDFILE" || require_port_free "$HTTP_PORT" "immich server"
+  service_running "$ML_PIDFILE" || require_port_free "$ML_PORT" "machine-learning"
+
+  if ! pg_ctl -D "$PGDATA" status >/dev/null 2>&1; then
+    require_port_free "$PG_PORT" "postgres"
+  fi
+
+  if ! { [[ -f "$REDIS_PIDFILE" ]] && kill -0 "$(cat "$REDIS_PIDFILE" 2>/dev/null || echo 0)" 2>/dev/null; }; then
+    require_port_free "$REDIS_PORT" "valkey"
+  fi
+}
+
+# Last resort for when pidfiles are gone: terminate anything that belongs to
+# this checkout by path.
+force_stop_strays() {
+  local pids
+  pids="$(stray_pids | tr '\n' ' ')"
+  [[ -z "${pids// /}" ]] && { log "no stray processes for this checkout"; return 0; }
+
+  log "terminating stray processes (matched by path or by listening on our ports):"
+  local pid
+  for pid in $pids; do
+    log "  $pid  $(ps -p "$pid" -o command= 2>/dev/null | cut -c1-90)"
+  done
+  # shellcheck disable=SC2086
+  kill -TERM $pids >/dev/null 2>&1 || true
+  for _ in $(seq 1 15); do
+    pids="$(stray_pids | tr '\n' ' ')"
+    [[ -z "${pids// /}" ]] && return 0
+    sleep 1
+  done
+
+  log "some processes ignored SIGTERM, sending SIGKILL"
+  # shellcheck disable=SC2086
+  kill -KILL $pids >/dev/null 2>&1 || true
+}
+
 # --- postgres ----------------------------------------------------------------
 
 start_postgres() {
@@ -279,6 +361,7 @@ start_server() {
 # --- commands ----------------------------------------------------------------
 
 do_start() {
+  preflight_ports
   start_postgres
   start_valkey
   start_ml
@@ -287,10 +370,34 @@ do_start() {
 }
 
 do_stop() {
+  local force="${1:-}"
+
   stop_service "immich server" "$SERVER_PIDFILE"
   stop_service "machine-learning" "$ML_PIDFILE"
   stop_valkey
   stop_postgres
+
+  if [[ "$force" == "--force" ]]; then
+    force_stop_strays
+  fi
+
+  # Report anything still holding our ports rather than leaving `start` to fail
+  # later with a confusing EADDRINUSE.
+  local leftover=() port name pids
+  for entry in "$HTTP_PORT:immich server" "$ML_PORT:machine-learning" \
+               "$PG_PORT:postgres" "$REDIS_PORT:valkey"; do
+    port="${entry%%:*}"
+    name="${entry#*:}"
+    pids="$(listeners_on_port "$port")"
+    [[ -n "$pids" ]] && leftover+=("  port $port ($name): ${pids% }")
+  done
+
+  if (( ${#leftover[@]} )); then
+    log "warning -- these ports are still in use:"
+    printf '%s\n' "${leftover[@]}"
+    [[ "$force" == "--force" ]] \
+      || log "if these are leftovers from this checkout, run: $0 stop --force"
+  fi
 }
 
 do_status() {
@@ -307,16 +414,20 @@ do_status() {
   server_ping="$(curl -fsS "http://$HTTP_HOST:$HTTP_PORT/api/server/ping" 2>/dev/null || echo 'down')"
   ml_ping="$(curl -fsS "http://$ML_HOST:$ML_PORT/ping" 2>/dev/null || echo 'down')"
 
-  log "server   http://$HTTP_HOST:$HTTP_PORT  -> $server_ping"
-  log "ml       http://$ML_HOST:$ML_PORT  -> $ml_ping"
+  local server_tracked ml_tracked
+  service_running "$SERVER_PIDFILE" && server_tracked="tracked" || server_tracked="NOT tracked"
+  service_running "$ML_PIDFILE" && ml_tracked="tracked" || ml_tracked="NOT tracked"
+
+  log "server   http://$HTTP_HOST:$HTTP_PORT  -> $server_ping  [$server_tracked]"
+  log "ml       http://$ML_HOST:$ML_PORT  -> $ml_ping  [$ml_tracked]"
   printf '\n'
 }
 
 case "${1:-start}" in
   start) do_start ;;
-  stop) do_stop ;;
-  restart) do_stop; do_start ;;
+  stop) do_stop "${2:-}" ;;
+  restart) do_stop "${2:-}"; do_start ;;
   status) do_status ;;
   logs) tail -n "${2:-50}" -F "$LOG_DIR"/*.log ;;
-  *) die "usage: $0 {start|stop|restart|status|logs}" ;;
+  *) die "usage: $0 {start|stop [--force]|restart|status|logs}" ;;
 esac
