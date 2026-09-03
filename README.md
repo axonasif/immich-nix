@@ -41,10 +41,12 @@ scripts/immich.sh restart
 
 | Path | Contents |
 | --- | --- |
+| `UPGRADING.md` | maintenance knowledge: pins, failure modes, verification |
 | `immich-version` | the Immich tag to build — the single version pin |
 | `nix/shell.nix` | toolchain and native libraries |
 | `nix/extism-js.nix` | upstream `extism-js` release binary (builds the WASM plugin) |
 | `nix/geodata.nix` | reverse-geocoding data, as a fixed-output derivation |
+| `scripts/show-upstream-pins.sh` | read every upstream pin out of an Immich tag |
 | `work/immich` | Immich source checkout (gitignored) |
 | `.local/immich-app` | built application (gitignored) |
 | `.local/immich-run` | runtime state: postgres, redis, logs, media (gitignored) |
@@ -70,17 +72,18 @@ Other knobs: `IMMICH_HTTP_HOST`, `IMMICH_HTTP_PORT`, `IMMICH_ML_HOST`,
 
 ## Upgrading Immich
 
-Change the tag in `immich-version`, then:
+**Read [UPGRADING.md](UPGRADING.md) first.** Bumping the tag alone is usually
+not enough: Immich releases move `sharp` (which gates on a specific libvips
+version at compile time), `extism-js`, and the toolchain versions, and each has
+a counterpart in `nix/`.
+
+Start by diffing the new tag's requirements against what this repo pins:
 
 ```bash
-nix develop --command scripts/build.sh
+nix develop --command scripts/show-upstream-pins.sh v3.2.0
 ```
 
-Two things to check when moving to a new release:
-
-- **`sharp` and libvips.** Immich pins a `sharp` version that requires a
-  specific libvips; `nix/shell.nix` must match. v3.1.0 uses sharp 0.34.5
-  (libvips 8.17). Immich 3.2 moves to sharp 0.35.3, which requires libvips
-  ≥ 8.18.3 — the pin has to move with it.
-- **`extism-js`.** `nix/extism-js.nix` pins a version and checksum copied from
-  Immich's own `mise.lock`. Re-copy them from the new tag.
+That prints every upstream pin and what it maps to here. Update `nix/` and
+`immich-version` accordingly, rebuild, then work through the verification
+checklist in UPGRADING.md — in particular the core-plugin check, which is the
+one thing that regresses **silently**.

@@ -37,7 +37,7 @@ fetch_source() {
   fi
 
   log "checking out immich $IMMICH_VERSION"
-  git -C "$SRC_DIR" fetch -q --depth=1 origin "refs/tags/$IMMICH_VERSION:refs/tags/$IMMICH_VERSION"
+  git -C "$SRC_DIR" fetch -q --depth=1 "$UPSTREAM" "refs/tags/$IMMICH_VERSION:refs/tags/$IMMICH_VERSION"
   git -C "$SRC_DIR" checkout -q --force "$IMMICH_VERSION"
   git -C "$SRC_DIR" clean -qfdx -e node_modules
 }
