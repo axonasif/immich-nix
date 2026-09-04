@@ -5,3 +5,6 @@
 
 # Direnv
 /.direnv/
+
+# macOS Finder metadata
+.DS_Store
