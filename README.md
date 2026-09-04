@@ -1,15 +1,14 @@
 # immich-local-nix for macOS and Linux
 
 [Immich](https://immich.app) built and run natively with Nix, without Docker.
-Apple Silicon macOS is the primary target; Linux support is experimental but
-has been verified end to end. GPU-accelerated machine learning is supported on
-Apple Silicon through CoreML.
+Apple Silicon macOS and aarch64/x86_64 Linux are supported. GPU-accelerated
+machine learning is available on Apple Silicon through CoreML.
 
 This project provides a low-complexity, single-host deployment designed for
-macOS and also verified on Linux. Nix supplies the build toolchain, native
-libraries, PostgreSQL, and Valkey, while Immich is built from its pinned
-upstream source with its own `pnpm` and `uv` workflows. Application data,
-runtime state, and build outputs remain inside the repository by default.
+macOS and Linux. Nix supplies the build toolchain, native libraries, PostgreSQL,
+and Valkey, while Immich is built from its pinned upstream source with its own
+`pnpm` and `uv` workflows. Application data, runtime state, and build outputs
+remain inside the repository by default.
 
 This is an independent deployment method, not an official Immich distribution.
 Upstream recommends Docker Compose for production installations.
@@ -34,7 +33,7 @@ for the implementation rationale and measurements.
 ## Requirements
 
 - [Nix](https://nixos.org/download/) with flakes enabled
-- Apple Silicon macOS (supported), or aarch64/x86_64 Linux (experimental)
+- Apple Silicon macOS, or aarch64/x86_64 Linux
 
 macOS does not require Homebrew or Xcode. System installations of Node.js and
 Python are not required on either platform. Your system is not polluted.
@@ -157,8 +156,8 @@ The runner supports the following configuration variables:
 
 ## Upstream compatibility
 
-The current revision targets **Immich v3.1.0** and was last verified against
-that release on macOS on **2026-09-03** and Linux on **2026-09-04**. The status
+The current revision targets **Immich v3.1.0** and was last tested against that
+release on macOS on **2026-09-03** and Linux on **2026-09-04**. The status
 terms distinguish components built directly from upstream (“Aligned”), native
 or platform-specific implementations intended to preserve the same feature
 behavior (“Adapted”), and incomplete operational parity (“Partial”). This is a
@@ -181,20 +180,13 @@ behavior or an exhaustive test matrix.
 | Scheduled database backups | Adapted | Immich's Debian-specific PostgreSQL binary path is patched to use the matching Nix-provided tools on `PATH`. |
 | Process lifecycle and health monitoring | Partial | The runner provides start, stop, restart, status, startup readiness checks, and logs. Docker restart policies and periodic container health checks are not reproduced. |
 
-Platform support is narrower than the systems currently exposed by `flake.nix`:
+Platform support:
 
 | Platform | Status | Notes |
 | --- | --- | --- |
-| Apple Silicon macOS (`aarch64-darwin`) | Supported | Primary and verified target; includes CoreML acceleration. |
+| Apple Silicon macOS (`aarch64-darwin`) | Supported | Includes CoreML acceleration. |
 | Intel macOS (`x86_64-darwin`) | Not currently supported | No matching `extism-js` release artifact is pinned. Nixpkgs is also dropping Intel Mac support. |
-| Linux (`aarch64-linux`, `x86_64-linux`) | Experimental (verified) | The standard installation flow above has been completed manually end to end on Linux. The flake and upstream-pinned `extism-js` artifacts cover both architectures; machine learning uses ONNX Runtime CPU. Upstream containers remain the recommended Linux deployment. |
-
-Linux remains experimental because its platform and distribution coverage is
-not exhaustive. New environments should use a fresh, disposable database first
-and complete the verification checklist in
-[UPGRADING.md](UPGRADING.md#4-verification-checklist). Reports should include
-the architecture, Linux distribution, Nix version, and the failed command or
-relevant service log.
+| Linux (`aarch64-linux`, `x86_64-linux`) | Supported | The flake and upstream-pinned `extism-js` artifacts cover both architectures; machine learning uses ONNX Runtime CPU. |
 
 The detailed alignment procedure, known divergences, and verification checklist
 are maintained in [UPGRADING.md](UPGRADING.md). Compatibility should be
