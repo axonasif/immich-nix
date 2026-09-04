@@ -25,7 +25,7 @@ at the cost of network-dependent, non-hermetic builds.
 
 On Apple Silicon, the local machine-learning patch selects a working execution
 route for each model family. In testing on an M1 Pro, smart-search indexing
-reached 32–37 images per second with CoreML with the `immich-app/ViT-SO400M-16-SigLIP2-384__webli` model, compared with 7–17 images per
+reached 32–37 images per second with CoreML with the `immich-app/ViT-SO400M-16-SigLIP2-384__webli` model, compared with 3-10 images per
 second on CPU. With the smaller `ViT-B-16-SigLIP2__webli` model, you can get ~120 images per second on M1 Pro. The patch also avoids an ONNX Runtime issue that can expand the
 SO400M text model into a 6.5 GB CoreML program. See
 [UPGRADING.md](UPGRADING.md#59-coreml-on-apple-silicon--model-specific-routing)
@@ -68,7 +68,7 @@ echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
 ```
 
 See the official [Nix download and installation
-instructions](https://nixos.org/download/) for other Linux configurations,
+instructions](https://nixos.org/download/) for other configurations,
 single-user installation, and troubleshooting.
 
 ## Installation
