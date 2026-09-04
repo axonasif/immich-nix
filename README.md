@@ -1,4 +1,4 @@
-# immich-native-nix
+# immich-native-nix for macOS and Linux
 
 [Immich](https://immich.app) built and run natively with Nix, without Docker.
 Apple Silicon macOS is the primary target; Linux support is available for
