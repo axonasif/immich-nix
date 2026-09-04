@@ -509,7 +509,21 @@ release candidates change.
 
 ## 4. Verification checklist
 
-After any upgrade, confirm all of these. Each has caught a real problem.
+Start every upgrade verification with the disposable native integration suite:
+
+```bash
+nix develop --command scripts/test.sh full
+```
+
+It automates the build/runtime contracts below plus a real CLI upload,
+metadata extraction, thumbnail generation, forced video transcode and playback,
+restart persistence, deletion, clean shutdown, and direct CLIP, face-recognition,
+and OCR inference. The full test selects `ViT-SO400M-16-SigLIP2-384__webli`,
+`buffalo_l`, and `PP-OCRv5_server`. It always uses a fresh database and media store under
+`.local/immich-test`; downloaded ML models are retained there between runs.
+
+After any upgrade, also confirm the remaining release-specific items in this
+checklist. Each has caught a real problem.
 
 ```bash
 # libvips actually linked (NOT sharp's bundled copy -- see §5.1)
