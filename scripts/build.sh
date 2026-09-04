@@ -24,24 +24,19 @@ die() { printf '\033[1;31m[build]\033[0m %s\n' "$*" >&2; exit 1; }
 # lifecycle scripts inside the checkout. Scope this environment to build tools
 # instead of the whole devShell so interactive git, nix, and shell behavior
 # continues to use the operator's normal home and configuration.
-mkdir -p \
-  "$BUILD_STATE/home" \
-  "$BUILD_STATE/cache" \
-  "$BUILD_STATE/config" \
-  "$BUILD_STATE/data" \
-  "$BUILD_STATE/state"
+mkdir -p "$BUILD_STATE/home"
 BUILD_STATE="$(cd "$BUILD_STATE" && pwd)"
 
 run_build_tool() (
   export HOME="$BUILD_STATE/home"
-  export XDG_CACHE_HOME="$BUILD_STATE/cache"
-  export XDG_CONFIG_HOME="$BUILD_STATE/config"
-  export XDG_DATA_HOME="$BUILD_STATE/data"
-  export XDG_STATE_HOME="$BUILD_STATE/state"
-  export PNPM_HOME="$BUILD_STATE/data/pnpm"
-  export COREPACK_HOME="$BUILD_STATE/cache/corepack"
-  export npm_config_cache="$BUILD_STATE/cache/npm"
-  export UV_CACHE_DIR="$BUILD_STATE/cache/uv"
+  export XDG_CACHE_HOME="$HOME/.cache"
+  export XDG_CONFIG_HOME="$HOME/.config"
+  export XDG_DATA_HOME="$HOME/.local/share"
+  export XDG_STATE_HOME="$HOME/.local/state"
+  export PNPM_HOME="$XDG_DATA_HOME/pnpm"
+  export COREPACK_HOME="$XDG_CACHE_HOME/node/corepack"
+  export npm_config_cache="$HOME/.npm"
+  export UV_CACHE_DIR="$XDG_CACHE_HOME/uv"
   export UV_PYTHON_DOWNLOADS=never
   command "$@"
 )
