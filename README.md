@@ -1,4 +1,4 @@
-# immich-native-nix for macOS and Linux
+# immich-local-nix for macOS and Linux
 
 [Immich](https://immich.app) built and run natively with Nix, without Docker.
 Apple Silicon macOS is the primary target; Linux support is experimental but
@@ -78,8 +78,8 @@ cloned recursively. A shallow clone keeps the initial download small:
 
 ```bash
 git clone --depth 1 --recurse-submodules --shallow-submodules \
-  https://github.com/axonasif/immich-native-nix.git
-cd immich-native-nix
+  https://github.com/axonasif/immich-local-nix.git
+cd immich-local-nix
 ```
 
 
@@ -142,7 +142,7 @@ The runner supports the following configuration variables:
 | `IMMICH_PREFIX` | Assembled application path | `.local/immich-app` |
 | `IMMICH_STATE_DIR` | Runtime state root | `.local/immich-run` |
 | `IMMICH_PGDATA` | PostgreSQL data directory | `$IMMICH_STATE_DIR/postgres` |
-| `IMMICH_PGSOCKET_DIR` | PostgreSQL Unix-socket directory | `$TMPDIR/immich-native-pgsocket` |
+| `IMMICH_PGSOCKET_DIR` | PostgreSQL Unix-socket directory | `$TMPDIR/immich-local-pgsocket` |
 | `IMMICH_MEDIA_DIR` | Immich media directory | `$IMMICH_STATE_DIR/media` |
 | `IMMICH_CACHE_DIR` | Machine-learning model cache | `$IMMICH_MEDIA_DIR/cache` |
 | `IMMICH_HTTP_HOST`, `IMMICH_HTTP_PORT` | Server bind address and port | `0.0.0.0`, `2283` |

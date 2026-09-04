@@ -119,7 +119,7 @@ let
   geodata = callPackage ./geodata.nix { };
 in
 mkShell {
-  name = "immich-native";
+  name = "immich-local";
 
   packages = [
     nodejs_24

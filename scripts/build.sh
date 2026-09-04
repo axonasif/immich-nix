@@ -10,6 +10,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMMICH_VERSION="${IMMICH_VERSION:-$(cat "$REPO_ROOT/immich-version")}"
 SRC_DIR="${IMMICH_SRC_DIR:-$REPO_ROOT/upstream/immich}"
 PREFIX="${IMMICH_PREFIX:-$REPO_ROOT/.local/immich-app}"
+BUILD_STATE="${IMMICH_BUILD_STATE_DIR:-$REPO_ROOT/.local/immich-build}"
 UPSTREAM="${IMMICH_UPSTREAM:-https://github.com/immich-app/immich.git}"
 
 log() { printf '\033[1;36m[build]\033[0m %s\n' "$*"; }
@@ -18,6 +19,36 @@ die() { printf '\033[1;31m[build]\033[0m %s\n' "$*" >&2; exit 1; }
 [[ -n "${IN_NIX_SHELL:-}${IMMICH_GEODATA:-}" ]] \
   || die "run inside the devShell: nix develop --command scripts/build.sh"
 [[ -n "${IMMICH_GEODATA:-}" ]] || die "IMMICH_GEODATA is unset; is the devShell current?"
+
+# Keep package-manager caches, state, and any HOME-based files created by
+# lifecycle scripts inside the checkout. Scope this environment to build tools
+# instead of the whole devShell so interactive git, nix, and shell behavior
+# continues to use the operator's normal home and configuration.
+mkdir -p \
+  "$BUILD_STATE/home" \
+  "$BUILD_STATE/cache" \
+  "$BUILD_STATE/config" \
+  "$BUILD_STATE/data" \
+  "$BUILD_STATE/state"
+BUILD_STATE="$(cd "$BUILD_STATE" && pwd)"
+
+run_build_tool() (
+  export HOME="$BUILD_STATE/home"
+  export XDG_CACHE_HOME="$BUILD_STATE/cache"
+  export XDG_CONFIG_HOME="$BUILD_STATE/config"
+  export XDG_DATA_HOME="$BUILD_STATE/data"
+  export XDG_STATE_HOME="$BUILD_STATE/state"
+  export PNPM_HOME="$BUILD_STATE/data/pnpm"
+  export COREPACK_HOME="$BUILD_STATE/cache/corepack"
+  export npm_config_cache="$BUILD_STATE/cache/npm"
+  export UV_CACHE_DIR="$BUILD_STATE/cache/uv"
+  export UV_PYTHON_DOWNLOADS=never
+  command "$@"
+)
+
+pnpm() { run_build_tool pnpm "$@"; }
+npm() { run_build_tool npm "$@"; }
+uv() { run_build_tool uv "$@"; }
 
 # --- source ------------------------------------------------------------------
 
@@ -201,6 +232,8 @@ install_wrappers() {
   # server image.
   cat > "$PREFIX/bin/immich" <<WRAPPER
 #!/usr/bin/env bash
+IMMICH_CONFIG_DIR="\${IMMICH_CONFIG_DIR:-\${IMMICH_STATE_DIR:-$REPO_ROOT/.local/immich-run}/cli}"
+export IMMICH_CONFIG_DIR
 exec "\$(command -v node)" "$PREFIX/cli/bin/immich" "\$@"
 WRAPPER
 
@@ -230,8 +263,9 @@ build_ml() {
     | tar -C "$ml" -xf -
 
   cd "$ml"
-  # Use the devShell's python; never let uv download its own interpreter.
-  UV_PYTHON_DOWNLOADS=never uv sync \
+  # Use the devShell's python; the uv wrapper prevents interpreter downloads
+  # and keeps its dependency cache inside the checkout.
+  uv sync \
     --frozen --extra cpu --no-dev --no-editable --no-install-project \
     --python "$(command -v python3)"
 
