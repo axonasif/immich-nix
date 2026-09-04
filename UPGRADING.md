@@ -730,7 +730,12 @@ Measured on an M1 Pro (16 GB), Immich v3.1.0, onnxruntime 1.26.0, macOS
 
 On Darwin with CoreML enabled, the patch also launches Uvicorn directly instead
 of placing its worker behind Gunicorn's `fork()`. CPU mode and non-Darwin keep
-the upstream Gunicorn launcher.
+the upstream Gunicorn launcher. Immich deliberately exits an idle worker after
+`MACHINE_LEARNING_MODEL_TTL` seconds so native model allocations are fully
+released. The patched Python parent restarts Uvicorn after that clean exit,
+matching Gunicorn/Compose supervision while leaving the replacement worker
+empty until the next inference request. Nonzero worker exits remain fatal so a
+broken configuration cannot enter an unbounded restart loop.
 
 This hybrid is the most performant reliable option found. In the terminology
 used during diagnosis, it is **not simply option 2 everywhere**: face detection

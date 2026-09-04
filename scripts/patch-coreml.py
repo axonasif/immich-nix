@@ -13,7 +13,8 @@ all of Immich's model shapes.  Keep MLProgram for static models, but:
 * use the older NeuralNetwork format for dynamically batched face recognition
   and dynamic-size OCR models; and
 * launch Uvicorn without Gunicorn's prefork on Darwin/CoreML, because MPS
-  cannot reliably contact MTLCompilerService from the forked worker; and
+  cannot reliably contact MTLCompilerService from the forked worker, and
+  restart it after Immich's intentional idle shutdown; and
 * retain MACHINE_LEARNING_DISABLE_COREML as a CPU escape hatch.
 
 This script deliberately uses exact source replacements.  A failed match is a
@@ -372,6 +373,7 @@ import subprocess
 import signal
 import subprocess
 import sys
+import time
 """,
     )
     replace(
@@ -405,10 +407,12 @@ import sys
     ) as cmd:
 """,
         """command: list[str | Path]
+restart_on_clean_exit = False
 if sys.platform == "darwin" and not os.getenv("MACHINE_LEARNING_DISABLE_COREML"):
     # CoreML's NeuralNetwork/MPS path can abort when initialized in Gunicorn's
     # forked worker because it cannot contact MTLCompilerService. Uvicorn uses
     # the current process for one worker and spawn for multiple workers.
+    restart_on_clean_exit = True
     command = [
         "python",
         "-m",
@@ -452,6 +456,32 @@ else:
 
 try:
     with subprocess.Popen(command) as cmd:
+""",
+    )
+    replace(
+        path,
+        "CoreML Uvicorn supervision",
+        """try:
+    with subprocess.Popen(command) as cmd:
+        cmd.wait()
+except KeyboardInterrupt:
+    cmd.send_signal(signal.SIGINT)
+exit(cmd.returncode)
+""",
+        """try:
+    while True:
+        with subprocess.Popen(command) as cmd:
+            cmd.wait()
+        if not restart_on_clean_exit or cmd.returncode != 0:
+            break
+        # The worker intentionally exits after its model TTL to release
+        # CoreML/native allocations. Replace it with an empty worker so the ML
+        # endpoint remains reachable without eagerly reloading any models.
+        log.info("Machine-learning worker exited after inactivity; restarting.")
+        time.sleep(1)
+except KeyboardInterrupt:
+    cmd.send_signal(signal.SIGINT)
+exit(cmd.returncode)
 """,
     )
 
