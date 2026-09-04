@@ -89,7 +89,7 @@ Build and start the complete stack:
 ```bash
 nix develop
 scripts/build.sh # only once
-scripts/immich.sh start
+scripts/immich.sh
 ```
 
 The web application is then available at <http://0.0.0.0:2283>. The initial
