@@ -2,7 +2,8 @@
 
 [Immich](https://immich.app) built and run natively with Nix, without Docker.
 Apple Silicon macOS is the primary target; Linux support is available for
-testing.
+testing. GPU-accelerated machine learning is supported on Apple Silicon through
+CoreML.
 
 This project provides a low-complexity, single-host deployment designed and
 verified on macOS. Nix supplies the build toolchain, native libraries,
