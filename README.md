@@ -17,10 +17,13 @@ no CoreML support.
 
 Building with upstream's own tooling avoids both, and machine learning gets
 **CoreML acceleration** from the upstream wheels — measured at 32-37 img/s for
-smart search on an M1 Pro, against 7-17 img/s on CPU. The larger CLIP models
-(`ViT-SO400M-*`) cannot compile under CoreML; `ViT-B-16-SigLIP2__webli` works
-well. `MACHINE_LEARNING_DISABLE_COREML=1` falls back to CPU
-(see [UPGRADING.md](UPGRADING.md) 5.9).
+smart search on an M1 Pro, against 7-17 img/s on CPU. A local patch selects the
+working representation per model: MLProgram for CLIP visual models and static
+face detection, NeuralNetwork for dynamic face recognition and OCR, and ORT
+CPU for SO400M's externally-stored text tower. It also works around an ONNX
+Runtime bug that otherwise expands `ViT-SO400M-*` into a 6.5 GB text-form
+model program. `MACHINE_LEARNING_DISABLE_COREML=1` remains a CPU escape hatch (see
+[UPGRADING.md](UPGRADING.md) 5.9).
 
 Also works on Linux, though there you may as well use upstream's containers.
 
@@ -92,7 +95,7 @@ immich-admin --help    # list-users, grant-admin, reset passwords, ...
 | `nix/geodata.nix` | upstream image's reverse-geocoding data, as a fixed-output derivation |
 | `nix/patches/` | libvips patch vendored from upstream's base-images |
 | `scripts/patch-postgres-bin-path.py` | drops Immich's hardcoded Debian postgres path |
-| `scripts/patch-disable-coreml.py` | makes onnxruntime's CoreML provider switchable off |
+| `scripts/patch-coreml.py` | routes CoreML models, works around ORT's large-model bug, and provides the CPU escape hatch |
 | `scripts/show-upstream-pins.sh` | read every upstream pin out of an Immich tag |
 | `upstream/immich` | **submodule** — Immich source; this is what gets built |
 | `upstream/base-images` | **submodule** — upstream's native-library builds, for reference |

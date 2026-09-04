@@ -61,14 +61,28 @@ patch_source() {
   git checkout -- "$backup_service"
   python3 "$REPO_ROOT/scripts/patch-postgres-bin-path.py" "$backup_service"
 
-  # onnxruntime's CoreML provider aborts the ML worker on Apple Silicon (an MPS
-  # assertion, "Unable to reach MTLCompilerService"), and wedges outright on
-  # large models. Upstream has no way to disable a provider, so make it a flag:
-  #   MACHINE_LEARNING_DISABLE_COREML=1  ->  CPU only
-  # Default behaviour is unchanged. See UPGRADING.md 5.9.
-  local ml_constants=machine-learning/immich_ml/models/constants.py
-  git checkout -- "$ml_constants"
-  python3 "$REPO_ROOT/scripts/patch-disable-coreml.py" "$ml_constants"
+  # Route each model family through the CoreML representation it can actually
+  # compile, and work around ORT's multi-gigabyte MLProgram constant bug. Keep
+  # MACHINE_LEARNING_DISABLE_COREML=1 as a CPU escape hatch. See UPGRADING.md
+  # 5.9 for the failure modes and measurements behind this policy.
+  local ml_root=machine-learning
+  local ml_files=(
+    immich_ml/__main__.py
+    immich_ml/models/constants.py
+    immich_ml/sessions/ort.py
+    immich_ml/models/base.py
+    immich_ml/models/clip/textual.py
+    immich_ml/models/clip/visual.py
+    immich_ml/models/facial_recognition/detection.py
+    immich_ml/models/facial_recognition/recognition.py
+    immich_ml/models/ocr/detection.py
+    immich_ml/models/ocr/recognition.py
+  )
+  local ml_file
+  for ml_file in "${ml_files[@]}"; do
+    git checkout -- "$ml_root/$ml_file"
+  done
+  python3 "$REPO_ROOT/scripts/patch-coreml.py" "$ml_root"
 }
 
 # nix cannot read files inside a submodule (they are not tracked by the parent

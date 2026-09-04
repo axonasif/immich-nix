@@ -706,13 +706,35 @@ Upstream's CPU image builds on **python 3.11**. Divergence has caused no
 problems, but if a wheel fails to resolve, matching upstream's minor version is
 the first thing to try.
 
-### 5.9 CoreML on Apple Silicon — works, except for large CLIP models
+### 5.9 CoreML on Apple Silicon — model-specific routing
 
-Measured on an M1 Pro (16 GB), Immich v3.1.0, onnxruntime 1.26.0, 2026-09-03.
+Measured on an M1 Pro (16 GB), Immich v3.1.0, onnxruntime 1.26.0, macOS
+26.5.2, 2026-09-03/04. The local policy is implemented by
+`scripts/patch-coreml.py`:
 
-**CoreML is worth using.** With `ViT-B-16-SigLIP2__webli` it indexed a
-9,331-asset library in about five minutes and never crashed, cold cache
-included:
+| Model family | Execution route | Reason |
+| --- | --- | --- |
+| CLIP visual encoders, including SO400M | MLProgram, static shapes, `MatMulAddFusion` disabled | Fast GPU path without ORT's giant generated constants |
+| B-16 textual encoder | MLProgram, `MatMulAddFusion` disabled | Its weights are embedded and CoreML compiles it normally |
+| SO400M textual encoder | ORT CPU | Its 2.8 GB of external initializers trigger an ORT CoreML path-loss bug; text runs once per query |
+| Face detector | Derived static 640x640 ONNX + MLProgram | Immich always supplies 640x640, so the source model's dynamic dimensions are unnecessary |
+| Face recognizer | NeuralNetwork | Preserves dynamic multi-face batching and is faster than a batch-1 static MLProgram |
+| OCR detector and recognizer | NeuralNetwork | Their spatial/width dimensions are intentionally dynamic; the detector also uses an MLProgram-incompatible MaxPool |
+
+On Darwin with CoreML enabled, the patch also launches Uvicorn directly instead
+of placing its worker behind Gunicorn's `fork()`. CPU mode and non-Darwin keep
+the upstream Gunicorn launcher.
+
+This hybrid is the most performant reliable option found. In the terminology
+used during diagnosis, it is **not simply option 2 everywhere**: face detection
+uses option 2 (static MLProgram), while face recognition and OCR use option 1
+(NeuralNetwork). SO400M uses the optimizer workaround for images and CPU only
+for the comparatively infrequent text query.
+
+#### Smart search
+
+With `ViT-B-16-SigLIP2__webli`, CoreML indexed a 9,331-asset library in about
+five minutes, cold cache included:
 
 | Arm | Throughput | p50 latency |
 | --- | --- | --- |
@@ -723,71 +745,130 @@ included:
 | CPU, isolated, 2 threads (Immich's default) | 7.3 img/s | 273.6 ms |
 | CPU, isolated, 9 threads | 17.0 img/s | 520.5 ms |
 
-CoreML saturates at ~60 img/s and serializes cleanly — extra threads add
-latency, not throughput. It is roughly **3.5x faster than CPU** at the best CPU
-thread count and **12x** single-threaded.
+CoreML saturates at about 60 img/s and serializes cleanly: extra threads add
+latency, not throughput. It is roughly 3.5x faster than CPU at the best CPU
+thread count and 12x faster single-threaded.
 
-The one real cost: cold model load is **~38 s on CoreML vs ~1 s on CPU**
-(compiling/reading the MLProgram). With `model_ttl = 300`, an idle instance
-unloads the model, so the first search after five minutes idle pays that 38 s.
+`ViT-SO400M-16-SigLIP2-384__webli` failed for a different reason. ORT's
+`MatMulAddFusion` converts initializer-backed MatMul + Add pairs to Gemm. The
+CoreML builder then serializes the generated/transposed weights as ASCII hex
+immediates in `model.mil`, rather than binary data in `weight.bin`:
 
-`scripts/build.sh` patches `SUPPORTED_PROVIDERS` so CoreML can be switched off
-without editing source, as an escape hatch:
+```text
+default ORT CoreML cache:
+  model.mil     6,566,229,453 bytes
+  weight.bin        7,332,416 bytes
+
+MatMulAddFusion disabled:
+  model.mil         2,405,136 bytes
+  weight.bin    1,707,212,352 bytes
+```
+
+This is ONNX Runtime issue
+[#32212](https://github.com/microsoft/onnxruntime/issues/32212); upstream PR
+[#32223](https://github.com/microsoft/onnxruntime/pull/32223) fixes generated
+constant storage but was still open when tested. The local workaround sets
+`optimization.disable_specified_optimizers=MatMulAddFusion` for CLIP MLProgram
+sessions. With it, SO400M-384 loaded in 27.3 s, ran its first inference in
+2.56 s, and averaged **183 ms/image warm versus 1267 ms on ORT CPU (6.9x)**.
+The CoreML compute plan assigned 1008 captured operations to the GPU, two to
+CoreML CPU, and left three graph nodes on ORT CPU.
+
+The workaround also improved a clean B-16 visual compile in a follow-up run:
+186.3 s and a 1.79 GB cache with the fusion, versus 5.8 s and a 739 MB cache
+without it; warm inference was unchanged (17.3 versus 17.0 ms). Keep the
+workaround on CLIP encoders until the ORT fix lands and is verified in the
+wheel.
+
+The SO400M textual tower has a separate ORT 1.26 limitation. All 330
+initializers are external files (2.83 GB total); during CoreML graph building,
+ORT reconstructs one without retaining the model path and aborts with
+`model_path must not be empty`. Both MLProgram and NeuralNetwork failed, even
+with graph optimization disabled. ORT CPU loaded it in 5.8 s and took about
+166 ms per warm query, so the patch routes only this textual tower to CPU while
+leaving the throughput-critical visual tower on CoreML.
+
+#### Face recognition
+
+Both buffalo detector and recognizer source models have dynamic input axes.
+MLProgram accepted most graph nodes but E5RT rejected the unbounded dimensions
+and prediction failed with CoreML status `-1`. ORT did not retry the complete
+model on CPU: its Python fallback catches `EPFail`, while this path raises the
+more general `Fail`, so the request became HTTP 500 and the queue retried it.
+
+Forcing `RequireStaticInputShapes=1` alone only moved nearly all work to ORT
+CPU (about 47 ms recognition and 85 ms detection), so it is not the fix. The
+measured choices were:
+
+| Face stage | CoreML mode | Warm latency |
+| --- | --- | --- |
+| Detector, derived static 640x640 MLProgram | GPU | **10.4 ms** |
+| Detector, dynamic NeuralNetwork | mostly CoreML CPU | 32.0 ms |
+| Detector, ORT CPU | CPU | 86.3 ms |
+| Recognizer, dynamic NeuralNetwork | hardware accelerated | **4.1 ms** at batch 1 |
+| Recognizer, static batch-1 MLProgram | GPU | 7.4 ms |
+| Recognizer, ORT CPU | CPU | 48.0 ms |
+
+The patch writes `model_coreml_static.onnx` beside the downloaded detector on
+first CoreML load. It leaves the source model untouched and attaches a
+content-derived `CACHE_KEY`, so changing the downloaded model creates a new
+CoreML cache entry. The recognizer stays dynamic to retain Immich's multi-face
+batching.
+
+InsightFace issue
+[#2238](https://github.com/deepinsight/insightface/issues/2238) describes the
+same broad dynamic-shape limitation, but staticizing the recognizer too is not
+the fastest configuration here.
+
+#### OCR
+
+The PP-OCRv5 detector preserves image aspect ratio, limits the shorter side to
+736 pixels, and rounds both sides to multiples of 32. Its dimensions therefore
+must remain dynamic. MLProgram also rejects its graph during compilation:
+
+```text
+in operation MaxPool.0: ceil_mode must be False when pad_type is equal to same
+```
+
+Consequently, neither the SO400M fusion workaround nor forcing static inputs
+fixes OCR. NeuralNetwork does. Measured warm inference:
+
+| OCR stage | NeuralNetwork / ALL | NeuralNetwork / CPUOnly | ORT CPU |
+| --- | ---: | ---: | ---: |
+| Detector, 736x736 | **173.7 ms** | 270.3 ms | 889.3 ms |
+| Recognizer, batch 1 | **16.5 ms** | 20.7 ms | 38.2 ms |
+| Recognizer, batch 6 | **42.1 ms** | 99.9 ms | 278.2 ms |
+
+The `ALL` versus `CPUOnly` difference confirms useful hardware acceleration,
+especially for batched recognition. Dynamic output shapes were preserved.
+
+There is an additional process-model trap: the same NeuralNetwork OCR request
+aborted inside MPS when run by Gunicorn's forked worker, reporting that
+`MTLCompilerService` was unavailable. It succeeded from the same environment
+under direct Uvicorn, returning 30 recognized items in 4.65 s on a cold full
+detector-to-recognizer HTTP request. A standalone process also succeeded both
+with and without `setsid`, isolating the problem to Gunicorn prefork rather
+than Immich's detached service session. Do not remove the Darwin Uvicorn route
+unless this exact OCR test still passes under the newer runtime.
+
+#### Operations and cache maintenance
+
+The CPU escape hatch remains available without rebuilding:
 
 ```bash
 MACHINE_LEARNING_DISABLE_COREML=1 scripts/immich.sh start
 ```
 
-#### Large CLIP models cannot compile — this part is real
+CoreML compilation is cached beneath each model directory. Old failed
+`dynamic_mlprogram` entries are no longer selected, but they can consume many
+gigabytes. With Immich stopped, it is safe to delete only the affected model's
+`coreml/` directory; the next load recompiles it. Re-test and remove this local
+patch when upgrading ONNX Runtime beyond the release containing PR #32223.
 
-`ViT-SO400M-16-SigLIP2-512__webli` (1.72 GB visual tower, static input
-`[1, 3, 512, 512]`) never finishes. Almost all weights are serialised as *text
-immediates* into `model.mil` instead of the binary blob:
-
-```
-visual/coreml/<hash>/0_dynamic_mlprogram/model/
-  compiled_model.mlmodelc/model.mil          6262 MB   <- hex float literals
-  compiled_model.mlmodelc/weights/weight.bin    9 MB   <- should hold these
-```
-
-`coremlcompiler` then parses 6.3 GB of ASCII; it wrote nothing for a 9-minute
-run. Note `_dynamic_` in the path despite fully static inputs — ORT split the
-graph into 3 partitions (1066/1069 nodes on CoreML), which appears to defeat
-static shape inference. **Root cause inside ORT was not confirmed.** Stick to
-B-16-class models on CoreML, or use the flag above for the big ones.
-
-#### The MTLCompilerService crash loop — transient, and how to clear it
-
-After the SO400M attempts, every B-16 load aborted mid-inference:
-
-```
-Unable to reach MTLCompilerService. ... error 3 - No such process
-MPSKernelDAG.mm:1382: failed assertion `Error getting visible function'
-WARNING  Worker (pid:NNNNN) was sent SIGABRT!
-```
-
-41 worker boots across 9 gunicorn masters, ~41 s apart (the model reload), for
-a measured 5.3 img/min. **It cleared after a `scripts/immich.sh stop --force`
-and has not returned.**
-
-These were each tested and are *not* the cause:
-
-| Suspected | Result |
-| --- | --- |
-| Request concurrency | No crash at 1, 2, 4, 9 or 10 threads on one session |
-| `setsid` detaching from the bootstrap namespace | No crash; 60.3 img/s detached |
-| Concurrent cold-load race in `base.py:load()` (no lock) | Log shows one load per worker, no `Attempt #N` |
-| Competing ML servers | Every master shut down before the next; no bind errors |
-| Cold/partial CoreML compile cache | Deleted the cache and re-ran under full load: compiled fine, no crash |
-
-`error 3 - No such process` means the Metal compiler XPC service was not
-running at all — a system-level failure, not an Immich or ORT one. The most
-plausible trigger is the SO400M compile above wedging MTLCompilerService, since
-the errors began immediately after those attempts and cleared once all stray
-processes were killed. **Not proven.**
-
-If it recurs: `scripts/immich.sh stop --force`, confirm no stray `python`/
-`postgres` remain, then restart. Fall back to the flag only if that fails.
+The same `MTLCompilerService` message can still indicate a genuinely unhealthy
+system compiler service. If it occurs from the direct-Uvicorn worker, stop all
+Immich processes before restarting; use the CPU flag only if the Metal service
+does not recover.
 
 ---
 
