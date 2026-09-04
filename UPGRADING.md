@@ -1,16 +1,17 @@
 # Upgrading and maintaining this repo
 
-Everything learned while getting Immich to build and run natively on
-aarch64-darwin. Read this before changing `immich-version` or `nix/`.
+Everything learned while getting Immich to build and run natively on Apple
+Silicon macOS and Linux. Read this before changing `immich-version` or `nix/`.
 
 ---
 
 ## 0. Read upstream first — this document goes stale
 
-> **Findings here were verified on 2026-09-03 against Immich v3.1.0, macOS
-> 25.5.0 (Apple Silicon), nixpkgs `nixos-unstable` @ 2026-08-31. Immich moves
-> fast. Treat everything below as a starting point and a record of *why*
-> decisions were made — not as current fact.**
+> **Findings here were verified against Immich v3.1.0 on 2026-09-03 on macOS
+> 25.5.0 (Apple Silicon), and on 2026-09-04 on Linux, with nixpkgs
+> `nixos-unstable` @ 2026-08-31. Immich moves fast. Treat everything below as a
+> starting point and a record of *why* decisions were made — not as current
+> fact.**
 
 **Always re-derive the specifics from upstream.** During the initial work,
 three confident conclusions turned out to be wrong or version-specific:
@@ -520,10 +521,11 @@ After any upgrade, confirm all of these. Each has caught a real problem.
   node -p 'const s=require("sharp");[!!s.format.heif,!!s.format.jxl,!!s.format.webp].join()')
 # expect: true,true,true
 
-# CoreML available (Apple Silicon)
+# ONNX Runtime provider is available
 .local/immich-app/machine-learning/.venv/bin/python \
   -c 'import onnxruntime; print(onnxruntime.get_available_providers())'
-# expect CoreMLExecutionProvider first
+# expect CoreMLExecutionProvider first on Apple Silicon; CPUExecutionProvider
+# must be present on Linux
 
 # server reports the right version
 curl -s localhost:2283/api/server/version        # {"major":3,"minor":1,...}
@@ -637,11 +639,13 @@ source, because nixpkgs' `extism-js-core` is broken on Darwin (§1). Immich does
 the same thing via `mise`, so this matches upstream's own build.
 
 The `sources` map pins `aarch64-darwin`, `aarch64-linux`, and `x86_64-linux`
-using the URLs and checksums from this Immich release's `mise.lock`. Linux is
-available for testing but remains unverified. Intel macOS is still blocked
-until its matching source is added and the runtime is exercised. Keep the
-README platform-support table consistent with this map; adding a flake system
-does not by itself make that platform supported.
+using the URLs and checksums from this Immich release's `mise.lock`. The native
+build and service stack has been verified manually on Linux using the standard
+README installation flow. Linux remains experimental because platform and
+distribution coverage is limited. Intel macOS is still blocked until its
+matching source is added and the runtime is exercised. Keep the README
+platform-support table consistent with this map; adding a flake system does not
+by itself make that platform supported.
 
 The binary self-reports `extism-js 1.5.1` regardless of actual version — an
 upstream quirk, not a wrong download. (nixpkgs patches the same string:
@@ -881,6 +885,19 @@ The same `MTLCompilerService` message can still indicate a genuinely unhealthy
 system compiler service. If it occurs from the direct-Uvicorn worker, stop all
 Immich processes before restarting; use the CPU flag only if the Metal service
 does not recover.
+
+### 5.10 Linux Python-wheel runtime libraries
+
+`uv` installs upstream's binary Python wheels rather than Nix-built Python
+packages. Their ELF dependencies are therefore not patched to Nix store paths,
+and both isolated PEP 517 builds and the assembled machine-learning virtual
+environment must be able to resolve the GCC runtime and zlib dynamically.
+
+On Linux, `nix/shell.nix` sets `LD_LIBRARY_PATH` with `lib.makeLibraryPath` for
+`stdenv.cc.cc.lib` and `zlib`. Keep this Linux-only: Darwin does not use the ELF
+loader, and setting a global library path there can change unrelated dependency
+resolution. If an upstream wheel gains another unresolved shared-library
+dependency, identify it from the failing wheel before extending this list.
 
 ---
 

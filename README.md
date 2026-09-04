@@ -1,15 +1,15 @@
 # immich-native-nix for macOS and Linux
 
 [Immich](https://immich.app) built and run natively with Nix, without Docker.
-Apple Silicon macOS is the primary target; Linux support is available for
-testing. GPU-accelerated machine learning is supported on Apple Silicon through
-CoreML.
+Apple Silicon macOS is the primary target; Linux support is experimental but
+has been verified end to end. GPU-accelerated machine learning is supported on
+Apple Silicon through CoreML.
 
-This project provides a low-complexity, single-host deployment designed and
-verified on macOS. Nix supplies the build toolchain, native libraries,
-PostgreSQL, and Valkey, while Immich is built from its pinned upstream source
-with its own `pnpm` and `uv` workflows. Application data, runtime state, and
-build outputs remain inside the repository by default.
+This project provides a low-complexity, single-host deployment designed for
+macOS and also verified on Linux. Nix supplies the build toolchain, native
+libraries, PostgreSQL, and Valkey, while Immich is built from its pinned
+upstream source with its own `pnpm` and `uv` workflows. Application data,
+runtime state, and build outputs remain inside the repository by default.
 
 This is an independent deployment method, not an official Immich distribution.
 Upstream recommends Docker Compose for production installations.
@@ -157,12 +157,12 @@ The runner supports the following configuration variables:
 ## Upstream compatibility
 
 The current revision targets **Immich v3.1.0** and was last verified against
-that release on **2026-09-03**. The status terms distinguish components built
-directly from upstream (“Aligned”), native or platform-specific implementations
-intended to preserve the same feature behavior (“Adapted”), and incomplete
-operational parity (“Partial”). This is a compatibility map, not a claim that
-the project reproduces every Docker-specific behavior or an exhaustive test
-matrix.
+that release on macOS on **2026-09-03** and Linux on **2026-09-04**. The status
+terms distinguish components built directly from upstream (“Aligned”), native
+or platform-specific implementations intended to preserve the same feature
+behavior (“Adapted”), and incomplete operational parity (“Partial”). This is a
+compatibility map, not a claim that the project reproduces every Docker-specific
+behavior or an exhaustive test matrix.
 
 | Area | Status | Scope and differences |
 | --- | --- | --- |
@@ -186,13 +186,14 @@ Platform support is narrower than the systems currently exposed by `flake.nix`:
 | --- | --- | --- |
 | Apple Silicon macOS (`aarch64-darwin`) | Supported | Primary and verified target; includes CoreML acceleration. |
 | Intel macOS (`x86_64-darwin`) | Not currently supported | No matching `extism-js` release artifact is pinned. |
-| Linux (`aarch64-linux`, `x86_64-linux`) | Experimental (untested) | The upstream-pinned `extism-js` artifacts and native service dependencies are available for both architectures. Machine learning uses ONNX Runtime CPU. Upstream containers remain the recommended Linux deployment. |
+| Linux (`aarch64-linux`, `x86_64-linux`) | Experimental (verified) | The standard installation flow above has been completed manually end to end on Linux. The flake and upstream-pinned `extism-js` artifacts cover both architectures; machine learning uses ONNX Runtime CPU. Upstream containers remain the recommended Linux deployment. |
 
-Linux testing follows the standard installation procedure above. A fresh,
-disposable database should be used first, followed by the verification
-checklist in [UPGRADING.md](UPGRADING.md#4-verification-checklist). Reports
-should include the architecture, Linux distribution, Nix version, and the
-failed command or relevant service log.
+Linux remains experimental because its platform and distribution coverage is
+not exhaustive. New environments should use a fresh, disposable database first
+and complete the verification checklist in
+[UPGRADING.md](UPGRADING.md#4-verification-checklist). Reports should include
+the architecture, Linux distribution, Nix version, and the failed command or
+relevant service log.
 
 The detailed alignment procedure, known divergences, and verification checklist
 are maintained in [UPGRADING.md](UPGRADING.md). Compatibility should be

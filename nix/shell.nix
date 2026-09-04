@@ -11,6 +11,7 @@
   uv,
   node-gyp,
   pkg-config,
+  zlib,
 
   # build and runtime utilities
   curl,
@@ -175,4 +176,12 @@ mkShell {
   # node-gyp looks for node headers here.
   # https://github.com/nodejs/node-gyp/issues/1191#issuecomment-301243919
   npm_config_nodedir = nodejs_24;
+
+  # uv installs upstream binary Python wheels, whose ELF dependencies are not
+  # patched like Nix-built packages. On Linux, make their runtime dependencies
+  # visible both to isolated PEP 517 builds and to the assembled ML venv.
+  ${if stdenv.hostPlatform.isLinux then "LD_LIBRARY_PATH" else null} = lib.makeLibraryPath [
+    stdenv.cc.cc.lib
+    zlib
+  ];
 }
