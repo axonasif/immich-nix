@@ -12,6 +12,12 @@
   node-gyp,
   pkg-config,
 
+  # build and runtime utilities
+  curl,
+  git,
+  lsof,
+  procps,
+
   # plugin (WASM) toolchain
   binaryen,
 
@@ -122,6 +128,10 @@ mkShell {
     node-gyp
     pkg-config
 
+    curl
+    git
+    lsof
+
     binaryen
     extism-js
 
@@ -148,6 +158,9 @@ mkShell {
   ++ lib.optionals stdenv.hostPlatform.isDarwin [
     apple-sdk
     libiconv
+  ]
+  ++ lib.optionals stdenv.hostPlatform.isLinux [
+    procps
   ];
 
   # Build sharp against the vips above instead of downloading a prebuilt binary.

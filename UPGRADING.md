@@ -636,6 +636,13 @@ dependencies`); inside Immich's pnpm workspace they resolve automatically.
 source, because nixpkgs' `extism-js-core` is broken on Darwin (§1). Immich does
 the same thing via `mise`, so this matches upstream's own build.
 
+The `sources` map pins `aarch64-darwin`, `aarch64-linux`, and `x86_64-linux`
+using the URLs and checksums from this Immich release's `mise.lock`. Linux is
+available for testing but remains unverified. Intel macOS is still blocked
+until its matching source is added and the runtime is exercised. Keep the
+README platform-support table consistent with this map; adding a flake system
+does not by itself make that platform supported.
+
 The binary self-reports `extism-js 1.5.1` regardless of actual version — an
 upstream quirk, not a wrong download. (nixpkgs patches the same string:
 `--replace-fail '1.5.1' '${version}'`.) Trust the URL, not `--version`.

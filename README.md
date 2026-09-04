@@ -1,73 +1,106 @@
 # immich-native-nix
 
-Run [Immich](https://immich.app) natively on macOS — no Docker, no VM.
+[Immich](https://immich.app) built and run natively with Nix, without Docker.
+Apple Silicon macOS is the primary target; Linux support is available for
+testing.
 
-**The goal is low complexity and low effort.** Immich's own recommendation is
-docker-compose, which on macOS means running a Linux VM and paying its
-virtualisation and filesystem overhead. This gets you a working Immich on the
-Mac itself with a handful of commands, and keeps the moving parts few enough
-that upgrading is editing one version file and rebuilding.
+This project provides a low-complexity, single-host deployment designed and
+verified on macOS. Nix supplies the build toolchain, native libraries,
+PostgreSQL, and Valkey, while Immich is built from its pinned upstream source
+with its own `pnpm` and `uv` workflows. Application data, runtime state, and
+build outputs remain inside the repository by default.
 
-Nix supplies the toolchain and native libraries; Immich is built from source
-with its own `pnpm` and `uv`. That split is deliberate — packaging Immich as a
-full Nix derivation means maintaining `pnpmDeps` hashes and a Python package
-set, and on Darwin it hits two walls: nixpkgs marks `extism-js-core` broken (so
-Immich 3.x's WASM plugin cannot build at all), and Nix-built `onnxruntime` has
-no CoreML support.
+This is an independent deployment method, not an official Immich distribution.
+Upstream recommends Docker Compose for production installations.
 
-Building with upstream's own tooling avoids both, and machine learning gets
-**CoreML acceleration** from the upstream wheels — measured at 32-37 img/s for
-smart search on an M1 Pro, against 7-17 img/s on CPU. A local patch selects the
-working representation per model: MLProgram for CLIP visual models and static
-face detection, NeuralNetwork for dynamic face recognition and OCR, and ORT
-CPU for SO400M's externally-stored text tower. It also works around an ONNX
-Runtime bug that otherwise expands `ViT-SO400M-*` into a 6.5 GB text-form
-model program. `MACHINE_LEARNING_DISABLE_COREML=1` remains a CPU escape hatch (see
-[UPGRADING.md](UPGRADING.md) 5.9).
+## Design
 
-Also works on Linux, though there you may as well use upstream's containers.
+Packaging Immich as a conventional Nix derivation would require maintaining
+`pnpmDeps` hashes and a separate Python package set. It also encounters two
+Darwin-specific limitations: nixpkgs marks `extism-js-core` as broken on
+Darwin, and its ONNX Runtime build does not include the CoreML execution
+provider. Building with upstream's package managers avoids both constraints,
+at the cost of network-dependent, non-hermetic builds.
+
+On Apple Silicon, the local machine-learning patch selects a working execution
+route for each model family. In testing on an M1 Pro, smart-search indexing
+reached 32–37 images per second with CoreML with the `immich-app/ViT-SO400M-16-SigLIP2-384__webli` model, compared with 7–17 images per
+second on CPU. With the smaller `ViT-B-16-SigLIP2__webli` model, you can get ~120 images per second on M1 Pro. The patch also avoids an ONNX Runtime issue that can expand the
+SO400M text model into a 6.5 GB CoreML program. See
+[UPGRADING.md](UPGRADING.md#59-coreml-on-apple-silicon--model-specific-routing)
+for the implementation rationale and measurements.
 
 ## Requirements
 
 - [Nix](https://nixos.org/download/) with flakes enabled
-- macOS on Apple Silicon (or Linux)
+- Apple Silicon macOS (supported), or aarch64/x86_64 Linux (experimental)
 
-Nothing else — no Homebrew, no Xcode, no Node or Python on your system.
+macOS does not require Homebrew or Xcode. System installations of Node.js and
+Python are not required on either platform. Your system is not polluted.
 
-## Setup
+### Installing Nix
 
-This repo uses git submodules (a pinned checkout of Immich, which is what gets
-built, plus upstream's base-images for reference), so **clone recursively**:
+For macOS, use the official multi-user installer:
 
 ```bash
-git clone --recurse-submodules https://github.com/<you>/immich-native-nix
+curl --proto '=https' --tlsv1.2 -L https://nixos.org/nix/install | sh
+```
+
+<details>
+<summary>Linux installation</summary>
+
+For Linux systems using systemd with SELinux disabled, use the recommended
+multi-user installation:
+
+```bash
+curl --proto '=https' --tlsv1.2 -L https://nixos.org/nix/install | sh -s -- --daemon
+```
+
+</details>
+
+After installation, start a new shell and enable the Nix command interface and
+flakes with the following commands:
+
+```bash
+mkdir -p ~/.config/nix
+echo 'experimental-features = nix-command flakes' >> ~/.config/nix/nix.conf
+```
+
+See the official [Nix download and installation
+instructions](https://nixos.org/download/) for other Linux configurations,
+single-user installation, and troubleshooting.
+
+## Installation
+
+The repository contains pinned Immich and base-images submodules and must be
+cloned recursively:
+
+```bash
+git clone --recurse-submodules https://github.com/axonasif/immich-native-nix.git
 cd immich-native-nix
 ```
 
-Already cloned without `--recurse-submodules`? Fetch them after the fact:
+
+
+Build and start the complete stack:
 
 ```bash
-git submodule update --init --depth 1
+nix develop
+scripts/build.sh # only once
+scripts/immich.sh start
 ```
 
-Then build and run:
+The web application is then available at <http://0.0.0.0:2283>. The initial
+build downloads the nixpkgs closure and application dependencies, then compiles
+`sharp` against the Nix-provided libvips. Subsequent builds reuse downloaded
+dependencies and are substantially faster.
 
-```bash
-nix develop                # enter the toolchain shell
-scripts/build.sh           # build immich into .local/immich-app  (slow first time)
-scripts/immich.sh start    # start postgres, Valkey, ML and the server
-```
+By default, the assembled application is stored in `.local/immich-app`, while
+PostgreSQL, Valkey, logs, cached models, and media are stored in
+`.local/immich-run`. No files are installed system-wide. Consequently, removing
+the checkout also removes all data stored in these default locations.
 
-Then open <http://127.0.0.1:2283> and create your admin account.
-
-The first build downloads a lot (nixpkgs closure, pnpm and Python deps) and
-compiles `sharp` against the Nix libvips; later builds are much faster.
-
-Everything lands under `.local/` — the built app in `.local/immich-app`, and
-postgres, Valkey, logs and media in `.local/immich-run`. Nothing is installed
-system-wide, and removing the repo removes the install.
-
-## Day-to-day
+## Operation
 
 ```bash
 scripts/immich.sh status
@@ -76,84 +109,134 @@ scripts/immich.sh stop
 scripts/immich.sh restart
 ```
 
-The Immich CLI and admin tool are built too:
+The upstream CLI and administration tool are included in the build:
 
 ```bash
 export PATH="$PWD/.local/immich-app/bin:$PATH"
-immich --help          # upload CLI
-immich-admin --help    # list-users, grant-admin, reset passwords, ...
+immich --help
+immich-admin --help
 ```
 
-## Layout
+## Data locations and configuration
 
-| Path | Contents |
-| --- | --- |
-| `UPGRADING.md` | maintenance knowledge: pins, failure modes, verification |
-| `immich-version` | the Immich tag to build — the single version pin |
-| `nix/shell.nix` | toolchain and native libraries |
-| `nix/extism-js.nix` | upstream `extism-js` release binary (builds the WASM plugin) |
-| `nix/geodata.nix` | upstream image's reverse-geocoding data, as a fixed-output derivation |
-| `nix/patches/` | libvips patch vendored from upstream's base-images |
-| `scripts/patch-postgres-bin-path.py` | drops Immich's hardcoded Debian postgres path |
-| `scripts/patch-coreml.py` | routes CoreML models, works around ORT's large-model bug, and provides the CPU escape hatch |
-| `scripts/show-upstream-pins.sh` | read every upstream pin out of an Immich tag |
-| `upstream/immich` | **submodule** — Immich source; this is what gets built |
-| `upstream/base-images` | **submodule** — upstream's native-library builds, for reference |
-| `.local/immich-app` | built application, incl. `bin/immich` and `bin/immich-admin` (gitignored) |
-| `.local/immich-run` | runtime state: postgres, Valkey, logs, media (gitignored) |
-
-## Pointing at existing data
-
-Defaults keep everything under `.local/` so a fresh checkout never touches an
-existing install. To use real data, set these before starting:
+The default paths isolate a fresh checkout from any existing Immich
+installation. To use an existing PostgreSQL cluster or media library, define
+the relevant paths before starting the stack:
 
 ```bash
 export IMMICH_PGDATA=/path/to/postgres
 export IMMICH_MEDIA_DIR=/path/to/media
 ```
 
-> **Immich runs irreversible schema migrations on first start.** Back up the
-> database before pointing this at a cluster you care about, and note that the
-> cluster's PostgreSQL major version must match the one in `nix/shell.nix`
-> (currently 17).
+> [!WARNING]
+> Immich runs irreversible schema migrations on first start. Create a database
+> backup before using an existing cluster. The cluster's PostgreSQL major
+> version must match `nix/shell.nix`, which currently provides PostgreSQL 17.
 
-Other knobs: `IMMICH_HTTP_HOST`, `IMMICH_HTTP_PORT`, `IMMICH_ML_HOST`,
-`IMMICH_ML_PORT`, `IMMICH_PG_PORT`, `IMMICH_REDIS_PORT`,
-`IMMICH_DB_STORAGE_TYPE` (`SSD` by default, or `HDD`),
-`IMMICH_DB_VECTOR_EXTENSION` (`vectorchord` is auto-selected; set `pgvector`
-to postpone migration), `IMMICH_ML_WORKERS`, `IMMICH_ML_WORKER_TIMEOUT`
-(Gunicorn request timeout in seconds, default `300`; it applies to CPU mode and
-non-Darwin systems, while normal Darwin/CoreML operation uses Uvicorn and
-ignores it),
-`MACHINE_LEARNING_DISABLE_COREML` (run ML on CPU — see UPGRADING.md 5.9).
+The runner supports the following configuration variables:
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `IMMICH_PREFIX` | Assembled application path | `.local/immich-app` |
+| `IMMICH_STATE_DIR` | Runtime state root | `.local/immich-run` |
+| `IMMICH_PGDATA` | PostgreSQL data directory | `$IMMICH_STATE_DIR/postgres` |
+| `IMMICH_PGSOCKET_DIR` | PostgreSQL Unix-socket directory | `$TMPDIR/immich-native-pgsocket` |
+| `IMMICH_MEDIA_DIR` | Immich media directory | `$IMMICH_STATE_DIR/media` |
+| `IMMICH_CACHE_DIR` | Machine-learning model cache | `$IMMICH_MEDIA_DIR/cache` |
+| `IMMICH_HTTP_HOST`, `IMMICH_HTTP_PORT` | Server bind address and port | `0.0.0.0`, `2283` |
+| `IMMICH_ML_HOST`, `IMMICH_ML_PORT` | Machine-learning bind address and port | `127.0.0.1`, `3003` |
+| `IMMICH_PG_PORT` | PostgreSQL port | `5433` |
+| `IMMICH_REDIS_HOST`, `IMMICH_REDIS_PORT` | Valkey bind address and port | `127.0.0.1`, `6380` |
+| `IMMICH_DB_STORAGE_TYPE` | PostgreSQL tuning profile (`SSD` or `HDD`) | `SSD` |
+| `IMMICH_DB_VECTOR_EXTENSION` | Force `pgvector` or `vectorchord`; unset allows Immich to auto-select VectorChord | unset |
+| `IMMICH_ML_WORKERS` | Machine-learning worker count | `1` |
+| `IMMICH_ML_WORKER_TIMEOUT` | Gunicorn timeout when the CoreML execution path is disabled | `300` seconds |
+| `MACHINE_LEARNING_DISABLE_COREML` | Set to `1` to disable CoreML and run machine learning on CPU | unset |
+
+## Upstream compatibility
+
+The current revision targets **Immich v3.1.0** and was last verified against
+that release on **2026-09-03**. The status terms distinguish components built
+directly from upstream (“Aligned”), native or platform-specific implementations
+intended to preserve the same feature behavior (“Adapted”), and incomplete
+operational parity (“Partial”). This is a compatibility map, not a claim that
+the project reproduces every Docker-specific behavior or an exhaustive test
+matrix.
+
+| Area | Status | Scope and differences |
+| --- | --- | --- |
+| Server, API, and background workers | Aligned | Built from the pinned Immich source and run through the upstream `node dist/main` entry point. |
+| Web application | Aligned | Built from the pinned Immich source and served by the Immich server. |
+| Machine learning | Adapted | Uses upstream Python dependencies and CPU wheels. On Apple Silicon, a local patch routes smart search, face recognition, and OCR through model-specific CoreML representations; the SO400M text encoder remains on CPU. CoreML can be disabled. |
+| Core WASM plugin | Aligned | Built from upstream source with the `extism-js` release and checksum pinned by Immich. Plugin loading must be checked after upgrades because failure is otherwise non-fatal. |
+| Immich CLI and `immich-admin` | Aligned | Built from the pinned upstream source and installed with local wrappers. |
+| Image and video processing | Adapted | Uses the upstream libvips build choices and loader-priority patch, plus Jellyfin FFmpeg and the required native codecs from Nix. Some library patch versions may be newer than the upstream image. |
+| Reverse geocoding | Aligned | Uses the geodata payload extracted from the exact production base image pinned by the Immich release. |
+| PostgreSQL and vector search | Adapted | Runs PostgreSQL 17 with pgvector and VectorChord. Upstream database settings are translated where applicable; the macOS `effective_io_concurrency` exception is retained. |
+| Existing pgvector databases | Supported | Immich can retain pgvector or migrate it to VectorChord. Set `IMMICH_DB_VECTOR_EXTENSION=pgvector` to postpone migration. |
+| Legacy pgvecto.rs (`vectors`) databases | Migration required | pgvecto.rs is not packaged. Such databases must follow Immich's standalone PostgreSQL migration procedure before use. |
+| Valkey | Adapted | Uses the Nix-provided Valkey package with Immich's existing Redis environment contract. |
+| Scheduled database backups | Adapted | Immich's Debian-specific PostgreSQL binary path is patched to use the matching Nix-provided tools on `PATH`. |
+| Process lifecycle and health monitoring | Partial | The runner provides start, stop, restart, status, startup readiness checks, and logs. Docker restart policies and periodic container health checks are not reproduced. |
+
+Platform support is narrower than the systems currently exposed by `flake.nix`:
+
+| Platform | Status | Notes |
+| --- | --- | --- |
+| Apple Silicon macOS (`aarch64-darwin`) | Supported | Primary and verified target; includes CoreML acceleration. |
+| Intel macOS (`x86_64-darwin`) | Not currently supported | No matching `extism-js` release artifact is pinned. |
+| Linux (`aarch64-linux`, `x86_64-linux`) | Experimental (untested) | The upstream-pinned `extism-js` artifacts and native service dependencies are available for both architectures. Machine learning uses ONNX Runtime CPU. Upstream containers remain the recommended Linux deployment. |
+
+Linux testing follows the standard installation procedure above. A fresh,
+disposable database should be used first, followed by the verification
+checklist in [UPGRADING.md](UPGRADING.md#4-verification-checklist). Reports
+should include the architecture, Linux distribution, Nix version, and the
+failed command or relevant service log.
+
+The detailed alignment procedure, known divergences, and verification checklist
+are maintained in [UPGRADING.md](UPGRADING.md). Compatibility should be
+re-established whenever `immich-version`, `flake.lock`, or native library pins
+change.
+
+## Project structure
+
+| Path | Purpose |
+| --- | --- |
+| `UPGRADING.md` | Version-alignment process, failure modes, and verification checklist |
+| `immich-version` | Authoritative Immich release tag |
+| `flake.nix`, `flake.lock` | Pinned nixpkgs input and development-shell outputs |
+| `nix/shell.nix` | Toolchain, services, and native libraries |
+| `nix/extism-js.nix` | Upstream `extism-js` release artifact used to build the WASM plugin |
+| `nix/geodata.nix` | Fixed-output reverse-geocoding data from the upstream image |
+| `nix/patches/` | libvips patch vendored from upstream base-images |
+| `scripts/build.sh` | Source build and runtime-tree assembly |
+| `scripts/immich.sh` | Native service runner |
+| `scripts/patch-postgres-bin-path.py` | PostgreSQL backup-command path adaptation |
+| `scripts/patch-coreml.py` | Apple Silicon CoreML routing and CPU fallback |
+| `scripts/show-upstream-pins.sh` | Comparison of an Immich release with repository pins |
+| `upstream/immich` | Pinned Immich source submodule used for the build |
+| `upstream/base-images` | Pinned upstream native-library reference submodule |
+| `.local/immich-app` | Generated application tree (ignored by Git) |
+| `.local/immich-run` | Generated runtime state (ignored by Git) |
 
 ## Upgrading Immich
 
-**Read [UPGRADING.md](UPGRADING.md) first.** Bumping the tag alone is usually
-not enough: Immich releases move `sharp` (which gates on a specific libvips
-version at compile time), `extism-js`, and the toolchain versions, and each has
-a counterpart in `nix/`.
+Read [UPGRADING.md](UPGRADING.md) before changing the version. An upgrade can
+change the Node.js, pnpm, Python, `extism-js`, libvips, media-library, database,
+and service-runtime contracts in addition to the Immich source tag.
 
-Bumping the tag also moves the `upstream/immich` submodule — `scripts/build.sh`
-checks it out to match `immich-version`, so commit the submodule pointer
-afterwards to record it.
-
-Start by diffing the new tag's requirements against what this repo pins:
+Begin by comparing the target release with the repository's pins:
 
 ```bash
 nix develop --command scripts/show-upstream-pins.sh v3.2.0
 ```
 
-That reads the pins straight out of the tag — toolchain versions from
-`mise.toml`, `extism-js` from `mise.lock`, sharp's libvips requirement from
-npm, and the native library versions from
-[immich-app/base-images](https://github.com/immich-app/base-images), resolved
-to the base image your tag actually uses.
+After updating `nix/` and `immich-version`, rebuild and complete the verification
+checklist in `UPGRADING.md` against both a fresh database and a disposable copy
+of the previous version's database. `scripts/build.sh` checks out the selected
+tag in `upstream/immich`; the resulting submodule pointer must be recorded as
+part of a version update.
 
-Update `nix/` and `immich-version` accordingly, rebuild, then work through the
-verification checklist in UPGRADING.md — in particular the core-plugin check,
-which is the one thing that regresses **silently**.
-
-> Findings in UPGRADING.md were verified against v3.1.0 on 2026-09-03 and will
-> go stale. Always confirm against upstream — the immich repo at your tag,
-> base-images, and <https://docs.immich.app>.
+Maintenance findings in `UPGRADING.md` are version-specific. The source tree,
+base-images revision, release notes, and [official Immich
+documentation](https://docs.immich.app) remain authoritative.

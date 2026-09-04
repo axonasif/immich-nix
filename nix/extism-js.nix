@@ -22,6 +22,14 @@ let
       url = "https://github.com/extism/js-pdk/releases/download/v${version}/extism-js-aarch64-macos-v${version}.gz";
       sha256 = "548e25bda3971a07c32d78a249135cf8cb7b3eede101e878e06e53e01ac2e0ce";
     };
+    aarch64-linux = {
+      url = "https://github.com/extism/js-pdk/releases/download/v${version}/extism-js-aarch64-linux-v${version}.gz";
+      sha256 = "15a186250e68d6bff4ec839fff275d45a90e383a69209dcc1239eb9e3aee6e1b";
+    };
+    x86_64-linux = {
+      url = "https://github.com/extism/js-pdk/releases/download/v${version}/extism-js-x86_64-linux-v${version}.gz";
+      sha256 = "4ded271ccf465031ccd0dc35e7a140e134d7f30721671cc4a8e1ff805d4aad68";
+    };
   };
 
   source =
