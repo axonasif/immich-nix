@@ -118,36 +118,6 @@ immich --help
 immich-admin --help
 ```
 
-## Testing
-
-Run the native integration suite against a fresh disposable database and media
-store:
-
-```bash
-nix develop --command scripts/test.sh quick
-```
-
-This checks the assembled build, starts the complete native stack on isolated
-ports, uploads generated photo and video fixtures through the deployed CLI,
-waits for metadata extraction, thumbnail generation, and video transcoding,
-verifies persistence across a complete restart, deletes the assets, and checks
-clean shutdown. It also verifies PostgreSQL checksums, VectorChord indexes,
-Valkey, the web application, the core plugin, and repository-local state.
-
-The full mode additionally configures and exercises
-`ViT-SO400M-16-SigLIP2-384__webli` smart search, `buffalo_l` face recognition,
-and `PP-OCRv5_server` OCR through Immich, then calls each model family directly:
-
-```bash
-nix develop --command scripts/test.sh full
-```
-
-Model downloads are cached under `.local/immich-test/model-cache`; all other
-test state is recreated on every run. The integration suite covers this
-project's native adaptation boundary. The broader manual upgrade checklist in
-[UPGRADING.md](UPGRADING.md#4-verification-checklist) remains the release
-acceptance procedure.
-
 ## Data locations and configuration
 
 The default paths isolate a fresh checkout from any existing Immich
@@ -247,6 +217,36 @@ change.
 | `upstream/base-images` | Pinned upstream native-library reference submodule |
 | `.local/immich-app` | Generated application tree (ignored by Git) |
 | `.local/immich-run` | Generated runtime state (ignored by Git) |
+
+## Testing
+
+Run the native integration suite against a fresh disposable database and media
+store:
+
+```bash
+nix develop --command scripts/test.sh quick
+```
+
+This checks the assembled build, starts the complete native stack on isolated
+ports, uploads generated photo and video fixtures through the deployed CLI,
+waits for metadata extraction, thumbnail generation, and video transcoding,
+verifies persistence across a complete restart, deletes the assets, and checks
+clean shutdown. It also verifies PostgreSQL checksums, VectorChord indexes,
+Valkey, the web application, the core plugin, and repository-local state.
+
+The full mode additionally configures and exercises
+`ViT-SO400M-16-SigLIP2-384__webli` smart search, `buffalo_l` face recognition,
+and `PP-OCRv5_server` OCR through Immich, then calls each model family directly:
+
+```bash
+nix develop --command scripts/test.sh full
+```
+
+Model downloads are cached under `.local/immich-test/model-cache`; all other
+test state is recreated on every run. The integration suite covers this
+project's native adaptation boundary. The broader manual upgrade checklist in
+[UPGRADING.md](UPGRADING.md#4-verification-checklist) remains the release
+acceptance procedure.
 
 ## Upgrading Immich
 
