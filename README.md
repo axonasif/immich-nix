@@ -121,7 +121,10 @@ Other knobs: `IMMICH_HTTP_HOST`, `IMMICH_HTTP_PORT`, `IMMICH_ML_HOST`,
 `IMMICH_ML_PORT`, `IMMICH_PG_PORT`, `IMMICH_REDIS_PORT`,
 `IMMICH_DB_STORAGE_TYPE` (`SSD` by default, or `HDD`),
 `IMMICH_DB_VECTOR_EXTENSION` (`vectorchord` is auto-selected; set `pgvector`
-to postpone migration), `IMMICH_ML_WORKERS`,
+to postpone migration), `IMMICH_ML_WORKERS`, `IMMICH_ML_WORKER_TIMEOUT`
+(Gunicorn request timeout in seconds, default `300`; it applies to CPU mode and
+non-Darwin systems, while normal Darwin/CoreML operation uses Uvicorn and
+ignores it),
 `MACHINE_LEARNING_DISABLE_COREML` (run ML on CPU — see UPGRADING.md 5.9).
 
 ## Upgrading Immich
