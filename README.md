@@ -74,10 +74,11 @@ single-user installation, and troubleshooting.
 ## Installation
 
 The repository contains pinned Immich and base-images submodules and must be
-cloned recursively:
+cloned recursively. A shallow clone keeps the initial download small:
 
 ```bash
-git clone --recurse-submodules https://github.com/axonasif/immich-native-nix.git
+git clone --depth 1 --recurse-submodules --shallow-submodules \
+  https://github.com/axonasif/immich-native-nix.git
 cd immich-native-nix
 ```
 
