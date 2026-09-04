@@ -186,7 +186,7 @@ Platform support is narrower than the systems currently exposed by `flake.nix`:
 | Platform | Status | Notes |
 | --- | --- | --- |
 | Apple Silicon macOS (`aarch64-darwin`) | Supported | Primary and verified target; includes CoreML acceleration. |
-| Intel macOS (`x86_64-darwin`) | Not currently supported | No matching `extism-js` release artifact is pinned. |
+| Intel macOS (`x86_64-darwin`) | Not currently supported | No matching `extism-js` release artifact is pinned. Nixpkgs is also dropping Intel Mac support. |
 | Linux (`aarch64-linux`, `x86_64-linux`) | Experimental (verified) | The standard installation flow above has been completed manually end to end on Linux. The flake and upstream-pinned `extism-js` artifacts cover both architectures; machine learning uses ONNX Runtime CPU. Upstream containers remain the recommended Linux deployment. |
 
 Linux remains experimental because its platform and distribution coverage is
