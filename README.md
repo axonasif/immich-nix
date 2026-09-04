@@ -203,6 +203,7 @@ change.
 
 | Path | Purpose |
 | --- | --- |
+| `LICENSE` | GNU Affero General Public License v3.0 |
 | `UPGRADING.md` | Version-alignment process, failure modes, and verification checklist |
 | `immich-version` | Authoritative Immich release tag |
 | `flake.nix`, `flake.lock` | Pinned nixpkgs input and development-shell outputs |
@@ -241,3 +242,9 @@ part of a version update.
 Maintenance findings in `UPGRADING.md` are version-specific. The source tree,
 base-images revision, release notes, and [official Immich
 documentation](https://docs.immich.app) remain authoritative.
+
+## License
+
+This project is licensed under the [GNU Affero General Public License v3.0
+only](LICENSE) (`AGPL-3.0-only`). Immich, base-images, and other third-party
+components retain their respective copyrights and licenses.
