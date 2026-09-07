@@ -12,6 +12,8 @@
   node-gyp,
   pkg-config,
   zlib,
+  glib,
+  libglvnd,
 
   # build and runtime utilities
   curl,
@@ -183,5 +185,8 @@ mkShell {
   ${if stdenv.hostPlatform.isLinux then "LD_LIBRARY_PATH" else null} = lib.makeLibraryPath [
     stdenv.cc.cc.lib
     zlib
+    # The OpenCV wheel used by machine learning links against GLib and libGL.
+    glib
+    libglvnd
   ];
 }

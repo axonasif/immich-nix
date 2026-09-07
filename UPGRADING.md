@@ -690,9 +690,17 @@ Only a string enum (`INSIGHTFACE = "insightface"`) and an attribution comment
 remain in 3.2. Do not infer the dependency from a grep of the source tree —
 read `machine-learning/pyproject.toml` at the tag.
 
-Via `uv` this is a non-issue either way. It only mattered for the nixpkgs
-approach, where the derivation needed `mxnet` patched out and then failed on a
-missing `which`.
+In 3.1, `insightface` also pulls in the GUI-enabled `opencv-python` wheel while
+Immich directly depends on `opencv-python-headless`. The overlapping packages
+can leave the GUI wheel's `cv2` module active, which is why the Linux runtime
+currently provides GLib and `libGL` (§5.10). When upgrading to a release without
+`insightface`, rebuild the ML virtual environment, confirm only the headless
+OpenCV distribution remains, and re-run `ldd` before deciding whether `glib`
+and `libglvnd` can be removed. Also compare the target release's ML Dockerfile;
+do not remove runtime libraries solely because `insightface` disappeared.
+
+The old nixpkgs-based approach had a separate issue: its `insightface`
+derivation needed `mxnet` patched out and then failed on a missing `which`.
 
 ### 5.5 `HF_HUB_DISABLE_XET=1`
 
@@ -906,10 +914,12 @@ and both isolated PEP 517 builds and the assembled machine-learning virtual
 environment must be able to resolve the GCC runtime and zlib dynamically.
 
 On Linux, `nix/shell.nix` sets `LD_LIBRARY_PATH` with `lib.makeLibraryPath` for
-`stdenv.cc.cc.lib` and `zlib`. Keep this Linux-only: Darwin does not use the ELF
-loader, and setting a global library path there can change unrelated dependency
-resolution. If an upstream wheel gains another unresolved shared-library
-dependency, identify it from the failing wheel before extending this list.
+`stdenv.cc.cc.lib`, `zlib`, `glib`, and `libglvnd`. The latter two provide the
+GLib threading and `libGL` libraries required by the OpenCV wheel. Keep this
+Linux-only: Darwin does not use the ELF loader, and setting a global library
+path there can change unrelated dependency resolution. If an upstream wheel
+gains another unresolved shared-library dependency, identify it from the
+failing wheel before extending this list.
 
 ---
 
