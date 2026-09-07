@@ -73,22 +73,25 @@ single-user installation, and troubleshooting.
 ## Installation
 
 The repository contains pinned Immich and base-images submodules and must be
-cloned recursively. A shallow clone keeps the initial download small:
+cloned recursively:
 
 ```bash
-git clone --depth 1 --recurse-submodules --shallow-submodules \
-  https://github.com/axonasif/immich-nix.git
+git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/axonasif/immich-nix.git
 cd immich-nix
 ```
 
 
 
-Build and start the complete stack:
+Build the complete stack once:
 
 ```bash
-nix develop
-scripts/build.sh # only once
-scripts/immich.sh
+nix develop --command scripts/build.sh
+```
+
+Then start Immich:
+
+```
+nix develop --command scripts/immich.sh start
 ```
 
 The web application is then available at <http://0.0.0.0:2283>. The initial
@@ -102,6 +105,8 @@ PostgreSQL, Valkey, logs, cached models, and media are stored in
 the checkout also removes all data stored in these default locations.
 
 ## Operation
+
+Run `nix develop` to enter the immich env shell first to use the commands below easily.
 
 ```bash
 scripts/immich.sh status
