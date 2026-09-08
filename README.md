@@ -13,6 +13,8 @@ remain inside the repository by default.
 This is an independent deployment method, not an official Immich distribution.
 Upstream recommends Docker Compose for production installations.
 
+<img width="3456" height="2234" alt="CleanShot 2026-09-04 UTC 02 48 20@2x" src="https://github.com/user-attachments/assets/730ede62-87f9-4bb1-bf6c-77ee1a0d53e1" />
+
 ## Design
 
 Packaging Immich as a conventional Nix derivation would require maintaining
